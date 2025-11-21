@@ -107,11 +107,18 @@ jobs:
         id: tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-      - name: Generate changelog from git history
-        uses: orhun/git-cliff-action@v3
+      - name: Install Rust toolchain (for git-cliff)
+        uses: dtolnay/rust-toolchain@master
         with:
-          config: .gitcliff.toml
-          args: --tag ${{ steps.tag.outputs.VERSION }} --output release-notes.md
+          toolchain: stable
+
+      - name: Install git-cliff
+        run: |
+          cargo install --locked git-cliff
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Generate changelog from git history
+        run: git-cliff --config .gitcliff.toml --tag ${{ steps.tag.outputs.VERSION }} --output release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -121,17 +128,8 @@ jobs:
             | sort -z \
             | xargs -0 sha256sum > checksums.txt
 
-      - name: Check if Homebrew token is set
-        id: check_token
-        run: |
-          if [ -n "${{ secrets.HOMEBREW_TAP_TOKEN }}" ]; then
-            echo "token_set=true" >> $GITHUB_OUTPUT
-          else
-            echo "token_set=false" >> $GITHUB_OUTPUT
-          fi
-
       - name: Generate Homebrew formula and push tap
-        if: steps.check_token.outputs.token_set == 'true'
+        if: "${{ env.HOMEBREW_TAP_TOKEN != '' }}"
         env:
           VERSION: ${{ steps.tag.outputs.VERSION }}
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
@@ -140,12 +138,12 @@ jobs:
           TAR_URL="https://github.com/ruphy/sshdb/archive/refs/tags/v${VERSION}.tar.gz"
           SHA256=$(curl -L "$TAR_URL" | shasum -a 256 | awk '{print $1}')
 
-          mkdir -p /tmp/tap
+          TAP_DIR=$(mktemp -d)
           git config --global user.name "sshdb-release-bot"
           git config --global user.email "sshdb-release-bot@users.noreply.github.com"
-          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" /tmp/tap
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" "${TAP_DIR}"
 
-          cat > /tmp/tap/Formula/sshdb.rb <<EOF
+          cat > "${TAP_DIR}/Formula/sshdb.rb" <<EOF
           class Sshdb < Formula
             desc "Keyboard-first SSH library and launcher TUI"
             homepage "https://github.com/ruphy/sshdb"
@@ -164,12 +162,13 @@ jobs:
           end
           EOF
 
-          cd /tmp/tap
+          cd "${TAP_DIR}"
           git add Formula/sshdb.rb
-          if git commit -m "sshdb ${VERSION}"; then
-            git push origin HEAD:main
-          else
+          if git diff --cached --quiet; then
             echo "No changes to commit for tap."
+          else
+            git commit -m "sshdb ${VERSION}"
+            git push origin HEAD:main
           fi
 
       - name: Create Release
