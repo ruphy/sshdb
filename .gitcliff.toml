@@ -23,10 +23,16 @@ No notable changes.
 {% endfor %}
 
 ### Contributors
-{% for author, commits in commits | group_by(attribute="author") %}
+{% set contributors = commits | map(attribute="author") | unique %}
+{% if contributors | length == 0 %}
+- No new contributors for this release.
+{% else %}
+{% for author in contributors %}
 {% set author_name = author.name | default(value=author.email | default(value=author)) %}
-- {{ author_name }} ({{ commits | length }} commit{% if commits | length > 1 %}s{% endif %})
+{% set author_commits = commits | filter(attribute="author", value=author) %}
+- {{ author_name }} ({{ author_commits | length }} commit{% if author_commits | length > 1 %}s{% endif %})
 {% endfor %}
+{% endif %}
 {% endif %}
 """
 
