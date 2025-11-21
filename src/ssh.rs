@@ -109,6 +109,7 @@ pub fn command_preview(
     parts.join(" ")
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn build_bastion_string(
     config: &Config,
     bastion_name: &str,
@@ -167,7 +168,7 @@ fn select_key(host_key: Option<&str>, default_key: Option<&str>) -> Option<Strin
     }
 
     // fall back to common keys when no agent is present
-    for cand in FALLBACKS {
+    if let Some(cand) = FALLBACKS.first() {
         return Some(expand_tilde(cand));
     }
     None

@@ -497,7 +497,7 @@ fn render_modal_form(
                 .add_modifier(Modifier::BOLD),
         )));
         line_no += 1;
-        if let Some(f) = form.fields.get(0) {
+        if let Some(f) = form.fields.first() {
             let active = form.index == 0;
             rows.push(Line::from(vec![
                 Span::styled(

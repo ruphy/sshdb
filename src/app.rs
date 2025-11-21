@@ -76,7 +76,7 @@ impl BastionDropdownState {
                     host.description.clone().unwrap_or_default()
                 );
                 if let Some(score) = matcher.fuzzy_match(&haystack, &self.search_filter) {
-                    scored.push((score as i64, i));
+                    scored.push((score, i));
                 }
             }
             scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -415,7 +415,7 @@ impl FormState {
             f.cursor = f.cursor.min(f.value.len());
         }
         if matches!(self.kind, FormKind::Add) && self.index == 0 {
-            if let Some(cmd_field) = self.fields.get(0) {
+            if let Some(cmd_field) = self.fields.first() {
                 if let Some(spec) =
                     non_empty(&cmd_field.value).and_then(|s| parse_ssh_spec(&s).ok())
                 {
@@ -530,7 +530,7 @@ impl FormState {
                     .filter(|t| !t.is_empty())
                     .collect()
             })
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
         let options = non_empty(options_field)
             .map(|s| {
                 s.split_whitespace()
@@ -538,7 +538,7 @@ impl FormState {
                     .filter(|t| !t.is_empty())
                     .collect()
             })
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
         let remote_command = non_empty(remote_field);
         let description = non_empty(desc_field);
 
@@ -636,9 +636,9 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
     let mut key_path = None;
     let mut bastion = None;
     let mut options = Vec::new();
-    let tokens: Vec<&str> = input.trim().split_whitespace().collect();
+    let tokens: Vec<&str> = input.split_whitespace().collect();
     let mut i = 0usize;
-    if tokens.get(0) == Some(&"ssh") {
+    if tokens.first() == Some(&"ssh") {
         i += 1;
     }
 
@@ -1178,7 +1178,7 @@ impl App {
                     host.description.clone().unwrap_or_default()
                 );
                 if let Some(score) = self.matcher.fuzzy_match(&haystack, &self.filter) {
-                    scored.push((score as i64, i));
+                    scored.push((score, i));
                 }
             }
             scored.sort_by(|a, b| b.0.cmp(&a.0));
@@ -1323,11 +1323,11 @@ impl App {
     fn find_host_by_spec(&self, spec: &SshSpec) -> Option<usize> {
         self.config.hosts.iter().position(|h| {
             h.address == spec.address
-                && h.user.as_ref().map(|u| u.as_str()) == spec.user.as_deref()
+                && h.user.as_deref() == spec.user.as_deref()
                 && h.port == spec.port
                 && h.options == spec.options
-                && h.bastion.as_ref().map(|b| b.as_str()) == spec.bastion.as_deref()
-                && h.remote_command.as_ref().map(|c| c.as_str()) == spec.remote_command.as_deref()
+                && h.bastion.as_deref() == spec.bastion.as_deref()
+                && h.remote_command.as_deref() == spec.remote_command.as_deref()
         })
     }
 
