@@ -31,7 +31,12 @@ No notable changes.
 {% set display_name = first_commit.author.name | default(value=author_name | default(value="Unknown")) %}
 {% set author_email = author_name | default(value="") | lower %}
 {% set author_label = display_name | lower %}
-{% if not (author_email | contains(pat="bot") or author_email | contains(pat="noreply") or author_label | contains(pat="bot")) %}
+{% set email_bot_parts = author_email | split(pat="bot") | length %}
+{% set label_bot_parts = author_label | split(pat="bot") | length %}
+{% set email_noreply_parts = author_email | split(pat="noreply") | length %}
+{% set is_bot = email_bot_parts > 1 or label_bot_parts > 1 %}
+{% set is_noreply = email_noreply_parts > 1 %}
+{% if not is_bot and not is_noreply %}
 - {{ display_name }} ({{ author_commits | length }} commit{% if author_commits | length > 1 %}s{% endif %})
 {% endif %}
 {% endfor %}
