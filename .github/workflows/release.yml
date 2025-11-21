@@ -118,7 +118,7 @@ jobs:
           echo "$HOME/.cargo/bin" >> $GITHUB_PATH
 
       - name: Generate changelog from git history
-        run: git-cliff --config .gitcliff.toml --tag ${{ steps.tag.outputs.VERSION }} --output release-notes.md
+        run: git-cliff --config .gitcliff.toml --latest --output release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
