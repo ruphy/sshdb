@@ -148,10 +148,7 @@ jobs:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
           set -euo pipefail
-          TAR_URL="https://github.com/ruphy/sshdb/archive/refs/tags/v${VERSION}.tar.gz"
-          SHA256=$(curl -L "$TAR_URL" | shasum -a 256 | awk '{print $1}')
-
-          # Calculate checksums for bottle files
+          # Calculate checksums for per-platform release artifacts
           MACOS_X86_64_TAR="artifacts/sshdb-macos-x86_64/sshdb-macos-x86_64.tar.gz"
           MACOS_ARM64_TAR="artifacts/sshdb-macos-aarch64/sshdb-macos-aarch64.tar.gz"
           LINUX_X86_64_TAR="artifacts/sshdb-linux-x86_64/sshdb-linux-x86_64.tar.gz"
@@ -176,40 +173,37 @@ jobs:
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" "${TAP_DIR}"
           mkdir -p "${TAP_DIR}/Formula"
 
-          # Generate formula with bottle block
+          # Generate formula that directly references the prebuilt archives we publish
+          # rather than bottle artifacts (our release assets already serve as distro-specific binaries).
+          # This avoids Homebrew looking for bottle filenames that don't exist.
           {
             cat <<EOFRUBY
           class Sshdb < Formula
             desc "Keyboard-first SSH library and launcher TUI"
             homepage "https://github.com/ruphy/sshdb"
-            url "${TAR_URL}"
-            sha256 "${SHA256}"
+            version "${VERSION}"
             license "GPL-3.0-or-later"
-            depends_on "rust" => :build
           EOFRUBY
 
-            if [ -n "${MACOS_X86_64_SHA}" ] || [ -n "${MACOS_ARM64_SHA}" ] || [ -n "${LINUX_X86_64_SHA}" ]; then
+            if [ -n "${MACOS_ARM64_SHA}" ] || [ -n "${MACOS_X86_64_SHA}" ]; then
               cat <<EOFRUBY
-            bottle do
-              root_url "https://github.com/ruphy/sshdb/releases/download/v${VERSION}"
+
+            on_macos do
           EOFRUBY
               if [ -n "${MACOS_ARM64_SHA}" ]; then
                 cat <<EOFRUBY
-              sha256 cellar: :any_skip_relocation, arm64_sonoma: "${MACOS_ARM64_SHA}"
-              sha256 cellar: :any_skip_relocation, arm64_ventura: "${MACOS_ARM64_SHA}"
-              sha256 cellar: :any_skip_relocation, arm64_monterey: "${MACOS_ARM64_SHA}"
+              on_arm do
+                url "https://github.com/ruphy/sshdb/releases/download/v\#{version}/sshdb-macos-aarch64.tar.gz"
+                sha256 "${MACOS_ARM64_SHA}"
+              end
           EOFRUBY
               fi
               if [ -n "${MACOS_X86_64_SHA}" ]; then
                 cat <<EOFRUBY
-              sha256 cellar: :any_skip_relocation, x86_64_sonoma: "${MACOS_X86_64_SHA}"
-              sha256 cellar: :any_skip_relocation, x86_64_ventura: "${MACOS_X86_64_SHA}"
-              sha256 cellar: :any_skip_relocation, x86_64_monterey: "${MACOS_X86_64_SHA}"
-          EOFRUBY
-              fi
-              if [ -n "${LINUX_X86_64_SHA}" ]; then
-                cat <<EOFRUBY
-              sha256 cellar: :any_skip_relocation, x86_64_linux: "${LINUX_X86_64_SHA}"
+              on_intel do
+                url "https://github.com/ruphy/sshdb/releases/download/v\#{version}/sshdb-macos-x86_64.tar.gz"
+                sha256 "${MACOS_X86_64_SHA}"
+              end
           EOFRUBY
               fi
               cat <<EOFRUBY
@@ -217,27 +211,22 @@ jobs:
           EOFRUBY
             fi
 
-            cat <<EOFRUBY
-            def install
-              if OS.mac?
-                if Hardware::CPU.arm?
-                  bin_path = "sshdb-macos-aarch64.tar.gz"
-                else
-                  bin_path = "sshdb-macos-x86_64.tar.gz"
-                end
-              elsif OS.linux?
-                bin_path = "sshdb-linux-x86_64.tar.gz"
-              end
+            if [ -n "${LINUX_X86_64_SHA}" ]; then
+              cat <<EOFRUBY
 
-              if bin_path
-                bin_url = "https://github.com/ruphy/sshdb/releases/download/v\#{version}/\#{bin_path}"
-                system "curl", "-L", "-o", bin_path, bin_url
-                system "tar", "xzf", bin_path
-                bin.install "sshdb"
-                rm bin_path
-              else
-                system "cargo", "install", *std_cargo_args
+            on_linux do
+              on_intel do
+                url "https://github.com/ruphy/sshdb/releases/download/v\#{version}/sshdb-linux-x86_64.tar.gz"
+                sha256 "${LINUX_X86_64_SHA}"
               end
+            end
+          EOFRUBY
+            fi
+
+            cat <<'EOFRUBY'
+
+            def install
+              bin.install "sshdb"
             end
 
             test do
