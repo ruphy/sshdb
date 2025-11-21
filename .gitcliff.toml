@@ -26,11 +26,12 @@ No notable changes.
 {% if commits | length == 0 %}
 - No new contributors for this release.
 {% else %}
-{% for author_name, author_commits in commits | group_by(attribute="author.name") %}
-{% set author_email = (author_commits | first).author.email %}
-{% set display_name = author_name | default(value=author_email) %}
+{% for author_name, author_commits in commits | group_by(attribute="author.email") %}
+{% set first_commit = author_commits | first %}
+{% set display_name = first_commit.author.name | default(value=author_name | default(value="Unknown")) %}
 - {{ display_name }} ({{ author_commits | length }} commit{% if author_commits | length > 1 %}s{% endif %})
 {% endfor %}
+{% endif %}
 {% endif %}
 """
 
