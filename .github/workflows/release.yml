@@ -4,12 +4,14 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
   release:
+    if: startsWith(github.ref, 'refs/tags/v')
     name: Release ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -83,6 +85,7 @@ jobs:
           retention-days: 30
 
   create-release:
+    if: startsWith(github.ref, 'refs/tags/v')
     name: Create Release
     needs: release
     runs-on: ubuntu-latest
@@ -134,23 +137,23 @@ jobs:
           git clone "https://x-access-token:${TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" /tmp/tap
 
           cat > /tmp/tap/Formula/sshdb.rb <<EOF
-class Sshdb < Formula
-  desc "Keyboard-first SSH library and launcher TUI"
-  homepage "https://github.com/ruphy/sshdb"
-  url "${TAR_URL}"
-  sha256 "${SHA256}"
-  license "GPL-3.0-or-later"
-  depends_on "rust" => :build
+          class Sshdb < Formula
+            desc "Keyboard-first SSH library and launcher TUI"
+            homepage "https://github.com/ruphy/sshdb"
+            url "${TAR_URL}"
+            sha256 "${SHA256}"
+            license "GPL-3.0-or-later"
+            depends_on "rust" => :build
 
-  def install
-    system "cargo", "install", *std_cargo_args
-  end
+            def install
+              system "cargo", "install", *std_cargo_args
+            end
 
-  test do
-    system "#{bin}/sshdb", "--help"
-  end
-end
-EOF
+            test do
+              system "#{bin}/sshdb", "--help"
+            end
+          end
+          EOF
 
           cd /tmp/tap
           git add Formula/sshdb.rb
