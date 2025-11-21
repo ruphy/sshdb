@@ -122,11 +122,14 @@ jobs:
             | xargs -0 sha256sum > checksums.txt
 
       - name: Generate Homebrew formula and push tap
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
         env:
           VERSION: ${{ steps.tag.outputs.VERSION }}
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "HOMEBREW_TAP_TOKEN is not set, skipping Homebrew tap update"
+            exit 0
+          fi
           set -euo pipefail
           TAR_URL="https://github.com/ruphy/sshdb/archive/refs/tags/v${VERSION}.tar.gz"
           SHA256=$(curl -L "$TAR_URL" | shasum -a 256 | awk '{print $1}')
@@ -134,7 +137,7 @@ jobs:
           mkdir -p /tmp/tap
           git config --global user.name "sshdb-release-bot"
           git config --global user.email "sshdb-release-bot@users.noreply.github.com"
-          git clone "https://x-access-token:${TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" /tmp/tap
+          git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" /tmp/tap
 
           cat > /tmp/tap/Formula/sshdb.rb <<EOF
           class Sshdb < Formula
