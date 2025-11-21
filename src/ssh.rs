@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
+
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 

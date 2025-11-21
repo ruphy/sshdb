@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
+
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -777,7 +780,7 @@ fn render_about(frame: &mut Frame, theme: Theme) {
             Style::default().fg(theme.text),
         )),
         Line::from(Span::styled(
-            "License: GPL-3.0-only",
+            "License: GPL-3.0-or-later",
             Style::default().fg(theme.text),
         )),
         Line::from(Span::styled(

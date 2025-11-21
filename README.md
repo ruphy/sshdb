@@ -18,7 +18,7 @@ class Sshdb < Formula
   homepage "https://github.com/ruphy/sshdb"
   url "https://github.com/ruphy/sshdb/archive/refs/tags/v0.15.0.tar.gz"
   sha256 "REPLACE_WITH_RELEASE_SHA256"
-  license "GPL-3.0-only"
+  license "GPL-3.0-or-later"
   depends_on "rust" => :build
 
   def install

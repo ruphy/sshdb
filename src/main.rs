@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
+
 mod app;
 mod config;
 mod model;
