@@ -104,36 +104,71 @@ jobs:
         id: tag
         run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
+      - name: Generate changelog from git history
+        uses: orhun/git-cliff-action@v3
+        with:
+          config: .gitcliff.toml
+          args: --tag ${{ steps.tag.outputs.VERSION }} --output release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Generate checksums
+        run: |
+          find artifacts -type f \( -name "sshdb-*.tar.gz" -o -name "sshdb-*.zip" \) -print0 \
+            | sort -z \
+            | xargs -0 sha256sum > checksums.txt
+
+      - name: Generate Homebrew formula and push tap
+        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        env:
+          VERSION: ${{ steps.tag.outputs.VERSION }}
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAR_URL="https://github.com/ruphy/sshdb/archive/refs/tags/v${VERSION}.tar.gz"
+          SHA256=$(curl -L "$TAR_URL" | shasum -a 256 | awk '{print $1}')
+
+          mkdir -p /tmp/tap
+          git config --global user.name "sshdb-release-bot"
+          git config --global user.email "sshdb-release-bot@users.noreply.github.com"
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" /tmp/tap
+
+          cat > /tmp/tap/Formula/sshdb.rb <<EOF
+class Sshdb < Formula
+  desc "Keyboard-first SSH library and launcher TUI"
+  homepage "https://github.com/ruphy/sshdb"
+  url "${TAR_URL}"
+  sha256 "${SHA256}"
+  license "GPL-3.0-or-later"
+  depends_on "rust" => :build
+
+  def install
+    system "cargo", "install", *std_cargo_args
+  end
+
+  test do
+    system "#{bin}/sshdb", "--help"
+  end
+end
+EOF
+
+          cd /tmp/tap
+          git add Formula/sshdb.rb
+          if git commit -m "sshdb ${VERSION}"; then
+            git push origin HEAD:main
+          else
+            echo "No changes to commit for tap."
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ github.ref }}
           name: Release ${{ steps.tag.outputs.VERSION }}
-          body: |
-            ## Release ${{ steps.tag.outputs.VERSION }}
-
-            ### Binaries
-
-            - `sshdb-linux-x86_64.tar.gz` - Linux (x86_64)
-            - `sshdb-macos-x86_64.tar.gz` - macOS (Intel)
-            - `sshdb-macos-aarch64.tar.gz` - macOS (Apple Silicon)
-            - `sshdb-windows-x86_64.zip` - Windows (x86_64)
-
-            ### Installation
-
-            Extract the archive and place the binary in your PATH.
-
-            #### Linux/macOS
-            ```bash
-            tar xzf sshdb-*.tar.gz
-            sudo mv sshdb /usr/local/bin/
-            ```
-
-            #### Windows
-            Extract the zip file and add the directory to your PATH.
+          body_path: release-notes.md
           files: |
             artifacts/*/sshdb-*.tar.gz
             artifacts/*/sshdb-*.zip
+            checksums.txt
           draft: false
           prerelease: false
-

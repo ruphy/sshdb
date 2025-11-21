@@ -9,28 +9,13 @@ Keyboard-first SSH library and launcher TUI. Search, preview, and connect with a
 #### Install
 - From source: `cargo install --path .`
 - Build & run: `cargo run`
+- Homebrew: `brew tap ruphy/sshdb && brew install sshdb` (tap updates on releases)
 
-##### Homebrew (ship-ready)
-Add this formula to your tap (update `url`/`sha256` for your release tarball):
-```ruby
-class Sshdb < Formula
-  desc "Keyboard-first SSH library and launcher TUI"
-  homepage "https://github.com/ruphy/sshdb"
-  url "https://github.com/ruphy/sshdb/archive/refs/tags/v0.15.0.tar.gz"
-  sha256 "f0fed6beb31bc95fd75b7ed9e1dd0cd11a5588e3934b27d8b469049c91a27e57"
-  license "GPL-3.0-or-later"
-  depends_on "rust" => :build
 
-  def install
-    system "cargo", "install", *std_cargo_args
-  end
-
-  test do
-    system "#{bin}/sshdb", "--help"
-  end
-end
-```
-Then: `brew install --build-from-source ./sshdb.rb` (or from your tap).
+#### Release process
+- Tag `vX.Y.Z` and push; CI builds Linux/macOS (x86_64 + arm64)/Windows artifacts.
+- Release notes are generated from git history via `git-cliff` and published with the release.
+- A `checksums.txt` is attached to every release; use it to update downstream packages (Homebrew, etc.) without extra commits just to bump SHAs.
 
 #### Keys
 - `/` search • `Enter` connect • `c` connect with remote command • `g` quick connect (ssh string)
