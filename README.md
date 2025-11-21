@@ -2,20 +2,15 @@
 
 Keyboard-first SSH library and launcher TUI. Search, preview, and connect with a soft neon look and minimal chrome.
 
+
+#### Install
+- Homebrew: `brew tap ruphy/sshdb && brew install sshdb`
+- From GitHub: `cargo install --git https://github.com/ruphy/sshdb`
+- From source: `cargo install --path .`
+
 #### UI at a glance
 
 ![Screenshot](https://github.com/user-attachments/assets/03dbf3bc-35da-45e8-af9f-0cd29b468c66)
-
-#### Install
-- From source: `cargo install --path .`
-- Build & run: `cargo run`
-- Homebrew: `brew tap ruphy/sshdb && brew install sshdb` (tap updates on releases)
-
-
-#### Release process
-- Tag `vX.Y.Z` and push; CI builds Linux/macOS (x86_64 + arm64)/Windows artifacts.
-- Release notes are generated from git history via `git-cliff` and published with the release.
-- A `checksums.txt` is attached to every release; use it to update downstream packages (Homebrew, etc.) without extra commits just to bump SHAs.
 
 #### Keys
 - `/` search • `Enter` connect • `c` connect with remote command • `g` quick connect (ssh string)
