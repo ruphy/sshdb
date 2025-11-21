@@ -41,10 +41,58 @@ pub struct FormField {
 }
 
 #[derive(Clone, Debug)]
+pub struct BastionDropdownState {
+    pub search_filter: String,
+    pub filtered_indices: Vec<usize>,
+    pub selected: usize,
+}
+
+impl BastionDropdownState {
+    pub fn new(config: &Config) -> Self {
+        let mut state = Self {
+            search_filter: String::new(),
+            filtered_indices: Vec::new(),
+            selected: 0,
+        };
+        state.rebuild_filter(config);
+        state
+    }
+
+    pub fn rebuild_filter(&mut self, config: &Config) {
+        let matcher = SkimMatcherV2::default();
+        if self.search_filter.is_empty() {
+            self.filtered_indices = (0..config.hosts.len()).collect();
+        } else {
+            let mut scored: Vec<(i64, usize)> = Vec::new();
+            for (i, host) in config.hosts.iter().enumerate() {
+                let haystack = format!(
+                    "{} {} {} {}",
+                    host.name,
+                    host.address,
+                    host.tags.join(" "),
+                    host.description.clone().unwrap_or_default()
+                );
+                if let Some(score) = matcher.fuzzy_match(&haystack, &self.search_filter) {
+                    scored.push((score as i64, i));
+                }
+            }
+            scored.sort_by(|a, b| b.0.cmp(&a.0));
+            self.filtered_indices = scored.into_iter().map(|(_, i)| i).collect();
+        }
+        // Reset selection to top when filter changes
+        self.selected = 0;
+        if self.selected >= self.filtered_indices.len() {
+            self.selected = self.filtered_indices.len().saturating_sub(1);
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct FormState {
     pub kind: FormKind,
     pub fields: Vec<FormField>,
     pub index: usize,
+    pub bastion_dropdown: Option<BastionDropdownState>,
 }
 
 impl FormState {
@@ -154,15 +202,139 @@ impl FormState {
             kind,
             fields,
             index: 0,
+            bastion_dropdown: None,
         }
     }
 
-    pub fn handle_input(&mut self, key: KeyEvent) {
+    pub fn handle_input(&mut self, key: KeyEvent, config: &Config) {
+        // Check if we're on the bastion field (index 5 in the fields array, or 6 if Add form)
+        let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+        let is_bastion_field = self.index == bastion_field_idx;
+        
+        // Handle bastion dropdown if it's open
+        if is_bastion_field && self.bastion_dropdown.is_some() {
+            if let Some(dropdown) = self.bastion_dropdown.as_mut() {
+                match key.code {
+                    KeyCode::Esc => {
+                        // Close dropdown, keep current value
+                        self.bastion_dropdown = None;
+                        return;
+                    }
+                    KeyCode::Enter => {
+                        // Select from dropdown
+                        if let Some(idx) = dropdown.filtered_indices.get(dropdown.selected) {
+                            if let Some(host) = config.hosts.get(*idx) {
+                                if let Some(f) = self.fields.get_mut(bastion_field_idx) {
+                                    f.value = host.name.clone();
+                                    f.cursor = f.value.len();
+                                }
+                            }
+                        }
+                        self.bastion_dropdown = None;
+                        return;
+                    }
+                    KeyCode::Up => {
+                        if dropdown.selected > 0 {
+                            dropdown.selected -= 1;
+                        } else {
+                            dropdown.selected = dropdown.filtered_indices.len().saturating_sub(1);
+                        }
+                        return;
+                    }
+                    KeyCode::Down => {
+                        if dropdown.selected + 1 < dropdown.filtered_indices.len() {
+                            dropdown.selected += 1;
+                        } else {
+                            dropdown.selected = 0;
+                        }
+                        return;
+                    }
+                    KeyCode::Backspace => {
+                        // Update the field value first
+                        if let Some(f) = self.fields.get_mut(bastion_field_idx) {
+                            if f.cursor > 0 {
+                                f.value.remove(f.cursor - 1);
+                                f.cursor -= 1;
+                            }
+                            // Sync dropdown search filter with field value
+                            dropdown.search_filter = f.value.clone();
+                            dropdown.rebuild_filter(config);
+                        }
+                        return;
+                    }
+                    KeyCode::Char(c) => {
+                        // Handle Space specially - close dropdown when open
+                        if c == ' ' && key.modifiers.is_empty() {
+                            self.bastion_dropdown = None;
+                            return;
+                        }
+                        // Allow typing to filter the dropdown
+                        if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
+                            // Update the field value first
+                            if let Some(f) = self.fields.get_mut(bastion_field_idx) {
+                                f.value.insert(f.cursor, c);
+                                f.cursor += 1;
+                                // Sync dropdown search filter with field value
+                                dropdown.search_filter = f.value.clone();
+                                dropdown.rebuild_filter(config);
+                            }
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
+        }
+        
         match key.code {
-            KeyCode::Tab => self.next(),
-            KeyCode::BackTab => self.prev(),
-            KeyCode::Up => self.prev(),
-            KeyCode::Down => self.next(),
+            KeyCode::Tab => {
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                // Close dropdown when leaving bastion field
+                if self.index == bastion_field_idx {
+                    self.bastion_dropdown = None;
+                }
+                self.next();
+            }
+            KeyCode::BackTab => {
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                // Close dropdown when leaving bastion field
+                if self.index == bastion_field_idx {
+                    self.bastion_dropdown = None;
+                }
+                self.prev();
+            }
+            KeyCode::Up => {
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                // Close dropdown when leaving bastion field
+                if self.index == bastion_field_idx {
+                    self.bastion_dropdown = None;
+                }
+                self.prev();
+            }
+            KeyCode::Down => {
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                // Close dropdown when leaving bastion field
+                if self.index == bastion_field_idx {
+                    self.bastion_dropdown = None;
+                }
+                self.next();
+            }
+            KeyCode::Char(' ') => {
+                // Space key ONLY toggles dropdown when on bastion field
+                if is_bastion_field {
+                    if self.bastion_dropdown.is_some() {
+                        self.bastion_dropdown = None;
+                    } else {
+                        self.open_bastion_dropdown(config);
+                    }
+                    return; // Don't insert space, just toggle dropdown
+                }
+                // If not on bastion field, insert space normally
+                if let Some(f) = self.fields.get_mut(self.index) {
+                    f.value.insert(f.cursor, ' ');
+                    f.cursor += 1;
+                }
+            }
             KeyCode::Left => {
                 if let Some(f) = self.fields.get_mut(self.index) {
                     if f.cursor > 0 {
@@ -184,11 +356,34 @@ impl FormState {
                         f.cursor -= 1;
                     }
                 }
+                // Sync dropdown search filter if dropdown is open
+                if is_bastion_field {
+                    if let Some(dropdown) = self.bastion_dropdown.as_mut() {
+                        if let Some(f) = self.fields.get(bastion_field_idx) {
+                            dropdown.search_filter = f.value.clone();
+                            dropdown.rebuild_filter(config);
+                        }
+                    }
+                }
             }
             KeyCode::Char(c) => {
+                // Space is handled above - skip it here
+                if c == ' ' {
+                    return;
+                }
+                // Insert character normally
                 if let Some(f) = self.fields.get_mut(self.index) {
                     f.value.insert(f.cursor, c);
                     f.cursor += 1;
+                }
+                // Sync dropdown search filter if dropdown is open and on bastion field
+                if is_bastion_field {
+                    if let Some(dropdown) = self.bastion_dropdown.as_mut() {
+                        if let Some(f) = self.fields.get(bastion_field_idx) {
+                            dropdown.search_filter = f.value.clone();
+                            dropdown.rebuild_filter(config);
+                        }
+                    }
                 }
             }
             _ => {}
@@ -227,6 +422,17 @@ impl FormState {
         if let Some(f) = self.fields.get_mut(self.index) {
             f.cursor = f.value.len();
         }
+    }
+
+    fn open_bastion_dropdown(&mut self, config: &Config) {
+        let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+        let mut dropdown = BastionDropdownState::new(config);
+        // Initialize search filter with current field value
+        if let Some(f) = self.fields.get(bastion_field_idx) {
+            dropdown.search_filter = f.value.clone();
+            dropdown.rebuild_filter(config);
+        }
+        self.bastion_dropdown = Some(dropdown);
     }
 
     pub fn build_host(&self) -> Result<Host> {
@@ -410,6 +616,7 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
     }
 
     let mut target = None;
+    // First pass: find the target (hostname)
     while i < tokens.len() {
         let token = tokens[i];
         match token {
@@ -433,7 +640,7 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
             }
             other if other.starts_with('-') => {
                 options.push(other.to_string());
-                // capture parameter if present, even after target
+                // capture parameter if present
                 if let Some(next) = tokens.get(i + 1) {
                     if !next.starts_with('-')
                         && !next.contains('@')
@@ -448,6 +655,7 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
             }
             _ => {
                 target = Some(token.to_string());
+                i += 1;
                 break;
             }
         }
@@ -457,6 +665,53 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
     let Some(target) = target else {
         return Err(anyhow!("ssh target missing (expected user@host or host)"));
     };
+
+    // Second pass: continue parsing options after the target
+    let mut remote_start = None;
+    while i < tokens.len() {
+        let token = tokens[i];
+        match token {
+            "-p" => {
+                if let Some(p) = tokens.get(i + 1) {
+                    port = p.parse::<u16>().ok();
+                    i += 1;
+                }
+            }
+            "-i" => {
+                if let Some(k) = tokens.get(i + 1) {
+                    key_path = Some(k.to_string());
+                    i += 1;
+                }
+            }
+            "-J" => {
+                if let Some(b) = tokens.get(i + 1) {
+                    bastion = Some((*b).to_string());
+                    i += 1;
+                }
+            }
+            other if other.starts_with('-') => {
+                options.push(other.to_string());
+                // capture parameter if present
+                if let Some(next) = tokens.get(i + 1) {
+                    if !next.starts_with('-')
+                        && !next.contains('@')
+                        && next
+                            .chars()
+                            .any(|c| c.is_alphanumeric() || c == ':' || c == '/')
+                    {
+                        options.push((*next).to_string());
+                        i += 1;
+                    }
+                }
+            }
+            _ => {
+                // Not an option, this is where remote command starts
+                remote_start = Some(i);
+                break;
+            }
+        }
+        i += 1;
+    }
 
     let mut addr = target.clone();
     if let Some((u, h)) = target.split_once('@') {
@@ -471,8 +726,8 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
         key_path,
         options,
         bastion,
-        remote_command: if i + 1 < tokens.len() {
-            Some(tokens[i + 1..].join(" "))
+        remote_command: if let Some(start) = remote_start {
+            Some(tokens[start..].join(" "))
         } else {
             None
         },
@@ -719,27 +974,44 @@ impl App {
 
     fn handle_form(&mut self, key: KeyEvent) -> Result<Option<AppAction>> {
         if let Some(form) = self.form.as_mut() {
+            // Check if dropdown is open - if so, handle input there first
+            let bastion_field_idx = if matches!(form.kind, FormKind::Add) { 6 } else { 5 };
+            let is_bastion_field = form.index == bastion_field_idx;
+            if is_bastion_field && form.bastion_dropdown.is_some() {
+                // If Enter is pressed with dropdown open, let handle_input handle it
+                // (it will select and close dropdown, but not submit form)
+                if key.code == KeyCode::Enter {
+                    form.handle_input(key, &self.config);
+                    return Ok(None);
+                }
+            }
+            
             match key.code {
                 KeyCode::Esc => {
                     self.mode = Mode::Normal;
                     self.form = None;
                 }
-                KeyCode::Enter => match form.build_host() {
-                    Ok(host) => {
-                        let action = form.kind;
-                        self.save_host(action, host)?;
-                        self.form = None;
-                        self.mode = Mode::Normal;
-                    }
-                    Err(e) => {
-                        self.status = Some(StatusLine {
-                            text: e.to_string(),
-                            kind: StatusKind::Error,
-                        });
+                KeyCode::Enter => {
+                    // Only submit form if dropdown is not open
+                    if !(is_bastion_field && form.bastion_dropdown.is_some()) {
+                        match form.build_host() {
+                            Ok(host) => {
+                                let action = form.kind;
+                                self.save_host(action, host)?;
+                                self.form = None;
+                                self.mode = Mode::Normal;
+                            }
+                            Err(e) => {
+                                self.status = Some(StatusLine {
+                                    text: e.to_string(),
+                                    kind: StatusKind::Error,
+                                });
+                            }
+                        }
                     }
                 },
                 _ => {
-                    form.handle_input(key);
+                    form.handle_input(key, &self.config);
                 }
             }
         } else {
@@ -1181,6 +1453,36 @@ mod tests {
         assert_eq!(spec.user.as_deref(), Some("deploy"));
         assert_eq!(spec.port, Some(2201));
         assert_eq!(spec.key_path.as_deref(), Some("~/.ssh/key"));
+    }
+
+    #[test]
+    fn parses_options_after_host() {
+        // Test that -p (port option) after host is parsed correctly, not as remote command
+        let spec = parse_ssh_spec("host -p 3333").unwrap();
+        assert_eq!(spec.address, "host");
+        assert_eq!(spec.port, Some(3333));
+        assert_eq!(spec.remote_command, None);
+
+        // Test that any option after host is parsed correctly, not as remote command
+        let spec = parse_ssh_spec("host -L 8080:localhost:80").unwrap();
+        assert_eq!(spec.address, "host");
+        assert!(spec.options.contains(&"-L".to_string()));
+        assert!(spec.options.contains(&"8080:localhost:80".to_string()));
+        assert_eq!(spec.remote_command, None);
+
+        // Test that multiple options after host are parsed correctly
+        let spec = parse_ssh_spec("host -o StrictHostKeyChecking=no -v").unwrap();
+        assert_eq!(spec.address, "host");
+        assert!(spec.options.contains(&"-o".to_string()));
+        assert!(spec.options.contains(&"StrictHostKeyChecking=no".to_string()));
+        assert!(spec.options.contains(&"-v".to_string()));
+        assert_eq!(spec.remote_command, None);
+
+        // Test that actual remote command after options is parsed correctly
+        let spec = parse_ssh_spec("host -p 2222 uptime").unwrap();
+        assert_eq!(spec.address, "host");
+        assert_eq!(spec.port, Some(2222));
+        assert_eq!(spec.remote_command.as_deref(), Some("uptime"));
     }
 
     #[test]
