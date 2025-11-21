@@ -21,7 +21,7 @@ body = """
 
 ### Contributors
 {% for author, commits in commits | group_by(attribute="author") %}
-- {{ author }} ({{ commits | length }} commit{{ "s" if commits | length > 1 }})
+- {{ author }} ({{ commits | length }} commit{% if commits | length > 1 %}s{% endif %})
 {% endfor %}
 """
 
