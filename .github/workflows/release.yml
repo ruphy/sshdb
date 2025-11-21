@@ -142,6 +142,7 @@ jobs:
           git config --global user.name "sshdb-release-bot"
           git config --global user.email "sshdb-release-bot@users.noreply.github.com"
           git clone "https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/ruphy/homebrew-sshdb" "${TAP_DIR}"
+          mkdir -p "${TAP_DIR}/Formula"
 
           cat > "${TAP_DIR}/Formula/sshdb.rb" <<EOF
           class Sshdb < Formula
