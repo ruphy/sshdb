@@ -3,10 +3,10 @@
 
 use std::path::PathBuf;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
+use fuzzy_matcher::FuzzyMatcher;
 
 use crate::config::ConfigStore;
 use crate::model::{Config, Host};
@@ -211,9 +211,13 @@ impl FormState {
 
     pub fn handle_input(&mut self, key: KeyEvent, config: &Config) {
         // Check if we're on the bastion field (index 5 in the fields array, or 6 if Add form)
-        let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+        let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
+            6
+        } else {
+            5
+        };
         let is_bastion_field = self.index == bastion_field_idx;
-        
+
         // Handle bastion dropdown if it's open
         if is_bastion_field && self.bastion_dropdown.is_some() {
             if let Some(dropdown) = self.bastion_dropdown.as_mut() {
@@ -288,10 +292,14 @@ impl FormState {
                 }
             }
         }
-        
+
         match key.code {
             KeyCode::Tab => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
+                    6
+                } else {
+                    5
+                };
                 // Close dropdown when leaving bastion field
                 if self.index == bastion_field_idx {
                     self.bastion_dropdown = None;
@@ -299,7 +307,11 @@ impl FormState {
                 self.next();
             }
             KeyCode::BackTab => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
+                    6
+                } else {
+                    5
+                };
                 // Close dropdown when leaving bastion field
                 if self.index == bastion_field_idx {
                     self.bastion_dropdown = None;
@@ -307,7 +319,11 @@ impl FormState {
                 self.prev();
             }
             KeyCode::Up => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
+                    6
+                } else {
+                    5
+                };
                 // Close dropdown when leaving bastion field
                 if self.index == bastion_field_idx {
                     self.bastion_dropdown = None;
@@ -315,7 +331,11 @@ impl FormState {
                 self.prev();
             }
             KeyCode::Down => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
+                    6
+                } else {
+                    5
+                };
                 // Close dropdown when leaving bastion field
                 if self.index == bastion_field_idx {
                     self.bastion_dropdown = None;
@@ -428,7 +448,11 @@ impl FormState {
     }
 
     fn open_bastion_dropdown(&mut self, config: &Config) {
-        let bastion_field_idx = if matches!(self.kind, FormKind::Add) { 6 } else { 5 };
+        let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
+            6
+        } else {
+            5
+        };
         let mut dropdown = BastionDropdownState::new(config);
         // Initialize search filter with current field value
         if let Some(f) = self.fields.get(bastion_field_idx) {
@@ -978,7 +1002,11 @@ impl App {
     fn handle_form(&mut self, key: KeyEvent) -> Result<Option<AppAction>> {
         if let Some(form) = self.form.as_mut() {
             // Check if dropdown is open - if so, handle input there first
-            let bastion_field_idx = if matches!(form.kind, FormKind::Add) { 6 } else { 5 };
+            let bastion_field_idx = if matches!(form.kind, FormKind::Add) {
+                6
+            } else {
+                5
+            };
             let is_bastion_field = form.index == bastion_field_idx;
             if is_bastion_field && form.bastion_dropdown.is_some() {
                 // If Enter is pressed with dropdown open, let handle_input handle it
@@ -988,7 +1016,7 @@ impl App {
                     return Ok(None);
                 }
             }
-            
+
             match key.code {
                 KeyCode::Esc => {
                     self.mode = Mode::Normal;
@@ -1012,7 +1040,7 @@ impl App {
                             }
                         }
                     }
-                },
+                }
                 _ => {
                     form.handle_input(key, &self.config);
                 }
@@ -1477,7 +1505,9 @@ mod tests {
         let spec = parse_ssh_spec("host -o StrictHostKeyChecking=no -v").unwrap();
         assert_eq!(spec.address, "host");
         assert!(spec.options.contains(&"-o".to_string()));
-        assert!(spec.options.contains(&"StrictHostKeyChecking=no".to_string()));
+        assert!(spec
+            .options
+            .contains(&"StrictHostKeyChecking=no".to_string()));
         assert!(spec.options.contains(&"-v".to_string()));
         assert_eq!(spec.remote_command, None);
 

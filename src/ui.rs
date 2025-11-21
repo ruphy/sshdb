@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
 
-use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState, Wrap};
+use ratatui::Frame;
 
 use crate::app::{App, ConfirmKind, FormKind, Mode, StatusKind};
 use crate::model::{Config, Host};
@@ -460,10 +460,19 @@ fn render_modal_confirm(frame: &mut Frame, app: &App, confirm: ConfirmKind, them
     frame.render_widget(content, area);
 }
 
-fn render_modal_form(frame: &mut Frame, form: &crate::app::FormState, config: &Config, theme: Theme) {
+fn render_modal_form(
+    frame: &mut Frame,
+    form: &crate::app::FormState,
+    config: &Config,
+    theme: Theme,
+) {
     // Increase height if bastion dropdown is open
     let base_height = 18;
-    let dropdown_height = if form.bastion_dropdown.is_some() { 10 } else { 0 };
+    let dropdown_height = if form.bastion_dropdown.is_some() {
+        10
+    } else {
+        0
+    };
     let area = centered_rect_clamped(75, base_height + dropdown_height, frame.size());
     let title = match form.kind {
         FormKind::Add => "new host",
@@ -573,20 +582,18 @@ fn render_modal_form(frame: &mut Frame, form: &crate::app::FormState, config: &C
             cursor = Some((x, y));
         }
         line_no += 1;
-        
+
         // Render bastion dropdown if this is the bastion field and dropdown is open
         if local_idx == bastion_field_idx && form.bastion_dropdown.is_some() {
             if let Some(dropdown) = &form.bastion_dropdown {
                 rows.push(Line::from(Span::raw("")));
                 line_no += 1;
-                rows.push(Line::from(vec![
-                    Span::styled(
-                        "  Available hosts:",
-                        Style::default().fg(theme.muted),
-                    ),
-                ]));
+                rows.push(Line::from(vec![Span::styled(
+                    "  Available hosts:",
+                    Style::default().fg(theme.muted),
+                )]));
                 line_no += 1;
-                
+
                 let max_items = 8.min(dropdown.filtered_indices.len());
                 for i in 0..max_items {
                     if let Some(host_idx) = dropdown.filtered_indices.get(i) {
@@ -627,32 +634,29 @@ fn render_modal_form(frame: &mut Frame, form: &crate::app::FormState, config: &C
                     }
                 }
                 if dropdown.filtered_indices.len() > max_items {
-                    rows.push(Line::from(vec![
-                        Span::styled(
-                            format!("  ... and {} more", dropdown.filtered_indices.len() - max_items),
-                            Style::default().fg(theme.muted),
+                    rows.push(Line::from(vec![Span::styled(
+                        format!(
+                            "  ... and {} more",
+                            dropdown.filtered_indices.len() - max_items
                         ),
-                    ]));
+                        Style::default().fg(theme.muted),
+                    )]));
                     line_no += 1;
                 }
-                rows.push(Line::from(vec![
-                    Span::styled(
-                        "  (↑↓ to navigate, Enter to select, Esc to close, Space to toggle)",
-                        Style::default().fg(theme.muted),
-                    ),
-                ]));
+                rows.push(Line::from(vec![Span::styled(
+                    "  (↑↓ to navigate, Enter to select, Esc to close, Space to toggle)",
+                    Style::default().fg(theme.muted),
+                )]));
                 line_no += 1;
             }
         }
-        
+
         // Show hint when bastion field is active but dropdown is closed
         if local_idx == bastion_field_idx && active && form.bastion_dropdown.is_none() {
-            rows.push(Line::from(vec![
-                Span::styled(
-                    "  (Press Space to browse hosts)",
-                    Style::default().fg(theme.muted),
-                ),
-            ]));
+            rows.push(Line::from(vec![Span::styled(
+                "  (Press Space to browse hosts)",
+                Style::default().fg(theme.muted),
+            )]));
             line_no += 1;
         }
     }
