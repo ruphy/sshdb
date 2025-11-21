@@ -29,7 +29,11 @@ No notable changes.
 {% for author_name, author_commits in commits | group_by(attribute="author.email") %}
 {% set first_commit = author_commits | first %}
 {% set display_name = first_commit.author.name | default(value=author_name | default(value="Unknown")) %}
+{% set author_email = author_name | default(value="") | lower %}
+{% set author_label = display_name | lower %}
+{% if not (author_email | contains(pat="bot") or author_email | contains(pat="noreply") or author_label | contains(pat="bot")) %}
 - {{ display_name }} ({{ author_commits | length }} commit{% if author_commits | length > 1 %}s{% endif %})
+{% endif %}
 {% endfor %}
 {% endif %}
 {% endif %}
