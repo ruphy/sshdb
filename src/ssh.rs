@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
 use crate::model::{Config, Host};
 
@@ -121,9 +121,9 @@ fn build_bastion_string(
     }
     visited.push(bastion_name.to_string());
 
-    let bastion = config
-        .find_host(bastion_name)
-        .with_context(|| format!("bastion host '{}' not found", bastion_name))?;
+    let Some(bastion) = config.find_host(bastion_name) else {
+        return Ok(bastion_name.to_string());
+    };
 
     let mut chains = Vec::new();
     if let Some(nested) = &bastion.bastion {
@@ -167,11 +167,14 @@ fn select_key(host_key: Option<&str>, default_key: Option<&str>) -> Option<Strin
         return None;
     }
 
-    // fall back to common keys when no agent is present
-    if let Some(cand) = FALLBACKS.first() {
-        return Some(expand_tilde(cand));
+    // fall back to common keys when no agent is present; prefer an existing one
+    for cand in FALLBACKS {
+        let expanded = expand_tilde(cand);
+        if Path::new(&expanded).exists() {
+            return Some(expanded);
+        }
     }
-    None
+    FALLBACKS.first().map(|cand| expand_tilde(cand))
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -214,6 +217,27 @@ mod tests {
         assert!(preview.contains("deploy@10.0.0.1"));
         assert!(preview.ends_with("uptime"));
         assert!(preview.contains("-L 8080:localhost:80"));
+    }
+
+    #[test]
+    fn allows_free_text_bastion() {
+        let mut config = Config::default();
+        let host = Host {
+            name: "prod".into(),
+            address: "10.0.0.1".into(),
+            user: Some("deploy".into()),
+            port: None,
+            key_path: None,
+            tags: vec![],
+            options: vec![],
+            remote_command: None,
+            description: None,
+            bastion: Some("proxy.example.com".into()),
+        };
+        config.hosts.push(host.clone());
+        let preview = command_preview(&host, &config, None, None);
+        assert!(preview.contains("-J proxy.example.com"));
+        assert!(preview.contains("deploy@10.0.0.1"));
     }
 
     #[test]

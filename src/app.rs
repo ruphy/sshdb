@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
@@ -48,14 +48,16 @@ pub struct BastionDropdownState {
     pub search_filter: String,
     pub filtered_indices: Vec<usize>,
     pub selected: usize,
+    exclude_host: Option<String>,
 }
 
 impl BastionDropdownState {
-    pub fn new(config: &Config) -> Self {
+    pub fn new(config: &Config, exclude_host: Option<&str>) -> Self {
         let mut state = Self {
             search_filter: String::new(),
             filtered_indices: Vec::new(),
             selected: 0,
+            exclude_host: exclude_host.map(|s| s.to_string()),
         };
         state.rebuild_filter(config);
         state
@@ -64,10 +66,19 @@ impl BastionDropdownState {
     pub fn rebuild_filter(&mut self, config: &Config) {
         let matcher = SkimMatcherV2::default();
         if self.search_filter.is_empty() {
-            self.filtered_indices = (0..config.hosts.len()).collect();
+            self.filtered_indices = config
+                .hosts
+                .iter()
+                .enumerate()
+                .filter(|(_, h)| self.exclude_host.as_deref() != Some(&h.name))
+                .map(|(i, _)| i)
+                .collect();
         } else {
             let mut scored: Vec<(i64, usize)> = Vec::new();
             for (i, host) in config.hosts.iter().enumerate() {
+                if self.exclude_host.as_deref() == Some(&host.name) {
+                    continue;
+                }
                 let haystack = format!(
                     "{} {} {} {}",
                     host.name,
@@ -96,6 +107,7 @@ pub struct FormState {
     pub fields: Vec<FormField>,
     pub index: usize,
     pub bastion_dropdown: Option<BastionDropdownState>,
+    editing_host_name: Option<String>,
 }
 
 impl FormState {
@@ -206,6 +218,7 @@ impl FormState {
             fields,
             index: 0,
             bastion_dropdown: None,
+            editing_host_name: host.map(|h| h.name.clone()),
         }
     }
 
@@ -453,7 +466,7 @@ impl FormState {
         } else {
             5
         };
-        let mut dropdown = BastionDropdownState::new(config);
+        let mut dropdown = BastionDropdownState::new(config, self.editing_host_name.as_deref());
         // Initialize search filter with current field value
         if let Some(f) = self.fields.get(bastion_field_idx) {
             dropdown.search_filter = f.value.clone();
@@ -1028,9 +1041,18 @@ impl App {
                         match form.build_host() {
                             Ok(host) => {
                                 let action = form.kind;
-                                self.save_host(action, host)?;
-                                self.form = None;
-                                self.mode = Mode::Normal;
+                                match self.save_host(action, host) {
+                                    Ok(_) => {
+                                        self.form = None;
+                                        self.mode = Mode::Normal;
+                                    }
+                                    Err(e) => {
+                                        self.status = Some(StatusLine {
+                                            text: e.to_string(),
+                                            kind: StatusKind::Error,
+                                        });
+                                    }
+                                }
                             }
                             Err(e) => {
                                 self.status = Some(StatusLine {
@@ -1190,6 +1212,23 @@ impl App {
     }
 
     fn save_host(&mut self, kind: FormKind, host: Host) -> Result<()> {
+        let mut validation_config = self.config.clone();
+        match kind {
+            FormKind::Add => validation_config.hosts.push(host.clone()),
+            FormKind::Edit => {
+                if let Some(idx) = self.current_index() {
+                    validation_config.hosts[idx] = host.clone();
+                } else {
+                    self.status = Some(StatusLine {
+                        text: "No host selected to edit.".into(),
+                        kind: StatusKind::Warn,
+                    });
+                    return Ok(());
+                }
+            }
+        }
+        Self::validate_bastions(&validation_config)?;
+
         match kind {
             FormKind::Add => {
                 self.push_history();
@@ -1218,6 +1257,34 @@ impl App {
         }
         self.store.save(&self.config)?;
         self.rebuild_filter();
+        Ok(())
+    }
+
+    fn validate_bastions(config: &Config) -> Result<()> {
+        for host in &config.hosts {
+            if let Some(bastion_name) = &host.bastion {
+                if bastion_name == &host.name {
+                    bail!("Host '{}' cannot use itself as bastion.", host.name);
+                }
+
+                let mut seen: Vec<String> = vec![host.name.clone()];
+                let mut current = bastion_name.as_str();
+                loop {
+                    if seen.iter().any(|h| h == current) {
+                        bail!(
+                            "Circular bastion reference detected involving '{}'.",
+                            current
+                        );
+                    }
+                    let Some(bastion) = config.find_host(current) else {
+                        break;
+                    };
+                    seen.push(current.to_string());
+                    let Some(next) = &bastion.bastion else { break };
+                    current = next;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1519,6 +1586,41 @@ mod tests {
     }
 
     #[test]
+    fn rejects_self_bastion() {
+        let app = test_app();
+        let mut config = app.config.clone();
+        if let Some(host) = config.hosts.first_mut() {
+            host.bastion = Some(host.name.clone());
+        }
+        let err = App::validate_bastions(&config).unwrap_err();
+        assert!(err.to_string().contains("cannot use itself as bastion"));
+    }
+
+    #[test]
+    fn rejects_circular_bastions() {
+        let app = test_app();
+        let mut config = app.config.clone();
+        if let Some(jump) = config.hosts.iter_mut().find(|h| h.name == "jump-eu") {
+            jump.bastion = Some("staging-db".into());
+        }
+        let err = App::validate_bastions(&config).unwrap_err();
+        assert!(err
+            .to_string()
+            .to_lowercase()
+            .contains("circular bastion reference"));
+    }
+
+    #[test]
+    fn allows_unknown_bastion_name() {
+        let app = test_app();
+        let mut config = app.config.clone();
+        if let Some(host) = config.hosts.first_mut() {
+            host.bastion = Some("external.example.com".into());
+        }
+        App::validate_bastions(&config).unwrap();
+    }
+
+    #[test]
     fn quick_connect_adds_or_reuses() {
         let mut app = test_app();
         app.dry_run = true; // avoid spawning ssh in tests
@@ -1530,5 +1632,18 @@ mod tests {
         // Duplicate should reuse
         app.quick_connect(spec).unwrap();
         assert_eq!(app.config.hosts.len(), initial + 1);
+    }
+
+    #[test]
+    fn bastion_dropdown_excludes_current_host() {
+        let config = Config::sample();
+        let host = config.hosts[0].clone();
+        let mut form = FormState::new(FormKind::Edit, Some(&host), &config);
+        form.open_bastion_dropdown(&config);
+        let dropdown = form.bastion_dropdown.as_ref().expect("dropdown opened");
+        assert!(dropdown
+            .filtered_indices
+            .iter()
+            .all(|i| config.hosts[*i].name != host.name));
     }
 }
