@@ -126,9 +126,9 @@ jobs:
           toolchain: stable
 
       - name: Install git-cliff
-        run: |
-          cargo install --locked git-cliff
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+        uses: taiki-e/install-action@v2
+        with:
+          tool: git-cliff
 
       - name: Generate changelog from git history
         run: git-cliff --config .gitcliff.toml --latest --output release-notes.md
