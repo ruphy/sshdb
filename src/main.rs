@@ -13,7 +13,9 @@ use std::time::Duration;
 use anyhow::Result;
 use app::{App, AppAction, StatusKind, StatusLine};
 use config::ConfigStore;
-use crossterm::event;
+use crossterm::event::{
+    self, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -29,16 +31,21 @@ fn main() {
 }
 
 fn start() -> Result<()> {
-    let mut terminal = setup_terminal()?;
-    let res = run_loop(&mut terminal);
-    restore_terminal(&mut terminal)?;
+    let mut guard = TerminalGuard::new()?;
+    let res = run_loop(guard.terminal());
+    guard.restore()?;
     res
 }
 
 fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        // Keep kitty keyboard protocol scoped to the TUI session.
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    )?;
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
@@ -47,9 +54,46 @@ fn setup_terminal() -> Result<Terminal<CrosstermBackend<io::Stdout>>> {
 
 fn restore_terminal(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
     disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    execute!(
+        terminal.backend_mut(),
+        // Pop before leaving the alternate screen to avoid leaking CSI u sequences.
+        PopKeyboardEnhancementFlags,
+        LeaveAlternateScreen
+    )?;
     terminal.show_cursor()?;
     Ok(())
+}
+
+struct TerminalGuard {
+    terminal: Terminal<CrosstermBackend<io::Stdout>>,
+    restored: bool,
+}
+
+impl TerminalGuard {
+    fn new() -> Result<Self> {
+        Ok(Self {
+            terminal: setup_terminal()?,
+            restored: false,
+        })
+    }
+
+    fn terminal(&mut self) -> &mut Terminal<CrosstermBackend<io::Stdout>> {
+        &mut self.terminal
+    }
+
+    fn restore(&mut self) -> Result<()> {
+        if !self.restored {
+            restore_terminal(&mut self.terminal)?;
+            self.restored = true;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = self.restore();
+    }
 }
 
 fn run_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>) -> Result<()> {
