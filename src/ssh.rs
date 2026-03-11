@@ -25,11 +25,11 @@ pub fn build_command(
         cmd.arg("-p").arg(port.to_string());
     }
 
-    if let Some(key) = select_key(host.key_path.as_deref(), default_key) {
+    for key in select_keys(&host.key_paths, default_key) {
         cmd.arg("-i").arg(key);
     }
 
-    for opt in &host.options {
+    for opt in effective_options(host) {
         cmd.arg(opt);
     }
 
@@ -85,13 +85,13 @@ pub fn command_preview(
         parts.push(port.to_string());
     }
 
-    if let Some(key) = select_key(host.key_path.as_deref(), default_key) {
+    for key in select_keys(&host.key_paths, default_key) {
         parts.push("-i".into());
         parts.push(key);
     }
 
-    for opt in &host.options {
-        parts.push(opt.clone());
+    for opt in effective_options(host) {
+        parts.push(opt);
     }
 
     if let Some(user) = &host.user {
@@ -148,33 +148,90 @@ fn build_bastion_string(
     }
 }
 
-fn select_key(host_key: Option<&str>, default_key: Option<&str>) -> Option<String> {
+fn select_keys(host_keys: &[String], default_key: Option<&str>) -> Vec<String> {
     const FALLBACKS: [&str; 2] = ["~/.ssh/id_ed25519", "~/.ssh/id_rsa"];
-    if let Some(k) = host_key {
-        return Some(expand_tilde(k));
+    if !host_keys.is_empty() {
+        return host_keys.iter().map(|key| expand_tilde(key)).collect();
     }
     if let Some(k) = default_key {
         if k == "agent" {
-            return None;
+            return Vec::new();
         }
-        return Some(expand_tilde(k));
+        return vec![expand_tilde(k)];
     }
 
     let agent_available = std::env::var("SSH_AUTH_SOCK")
         .map(|v| !v.is_empty())
         .unwrap_or(false);
     if agent_available {
-        return None;
+        return Vec::new();
     }
 
     // fall back to common keys when no agent is present; prefer an existing one
     for cand in FALLBACKS {
         let expanded = expand_tilde(cand);
         if Path::new(&expanded).exists() {
-            return Some(expanded);
+            return vec![expanded];
         }
     }
-    FALLBACKS.first().map(|cand| expand_tilde(cand))
+    FALLBACKS
+        .first()
+        .map(|cand| vec![expand_tilde(cand)])
+        .unwrap_or_default()
+}
+
+fn effective_options(host: &Host) -> Vec<String> {
+    let mut options = if host.prefer_public_key_auth {
+        strip_preferred_auth_options(&host.options)
+    } else {
+        host.options.clone()
+    };
+
+    if host.prefer_public_key_auth {
+        options.splice(
+            0..0,
+            [
+                "-o".to_string(),
+                "PreferredAuthentications=publickey".to_string(),
+            ],
+        );
+    }
+
+    options
+}
+
+fn strip_preferred_auth_options(options: &[String]) -> Vec<String> {
+    let mut cleaned = Vec::new();
+    let mut i = 0;
+    while i < options.len() {
+        let current = &options[i];
+        if current == "-o" {
+            if let Some(next) = options.get(i + 1) {
+                if is_preferred_auth_option(next) {
+                    i += 2;
+                    continue;
+                }
+            }
+            cleaned.push(current.clone());
+            i += 1;
+            continue;
+        }
+
+        if current.starts_with("-o") && is_preferred_auth_option(&current[2..]) {
+            i += 1;
+            continue;
+        }
+
+        cleaned.push(current.clone());
+        i += 1;
+    }
+    cleaned
+}
+
+fn is_preferred_auth_option(option: &str) -> bool {
+    option
+        .to_ascii_lowercase()
+        .contains("preferredauthentications=")
 }
 
 fn expand_tilde(path: &str) -> String {
@@ -204,12 +261,13 @@ mod tests {
             address: "10.0.0.1".into(),
             user: Some("deploy".into()),
             port: Some(2222),
-            key_path: None,
+            key_paths: Vec::new(),
             tags: vec![],
             options: vec!["-L".into(), "8080:localhost:80".into()],
             remote_command: None,
             description: None,
             bastion: None,
+            prefer_public_key_auth: false,
         };
         let preview = command_preview(&host, &config, Some("~/.ssh/id_ed25519"), Some("uptime"));
         assert!(preview.contains("-p 2222"));
@@ -227,12 +285,13 @@ mod tests {
             address: "10.0.0.1".into(),
             user: Some("deploy".into()),
             port: None,
-            key_path: None,
+            key_paths: Vec::new(),
             tags: vec![],
             options: vec![],
             remote_command: None,
             description: None,
             bastion: Some("proxy.example.com".into()),
+            prefer_public_key_auth: false,
         };
         config.hosts.push(host.clone());
         let preview = command_preview(&host, &config, None, None);
@@ -259,12 +318,13 @@ mod tests {
             address: "example.com".into(),
             user: None,
             port: None,
-            key_path: None,
+            key_paths: Vec::new(),
             tags: vec![],
             options: Vec::new(),
             remote_command: None,
             description: None,
             bastion: None,
+            prefer_public_key_auth: false,
         };
         let old = std::env::var("SSH_AUTH_SOCK").ok();
         unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
@@ -284,12 +344,13 @@ mod tests {
             address: "example.com".into(),
             user: None,
             port: None,
-            key_path: None,
+            key_paths: Vec::new(),
             tags: vec![],
             options: Vec::new(),
             remote_command: None,
             description: None,
             bastion: None,
+            prefer_public_key_auth: false,
         };
         let old = std::env::var("SSH_AUTH_SOCK").ok();
         unsafe {
@@ -302,5 +363,77 @@ mod tests {
             unsafe { std::env::remove_var("SSH_AUTH_SOCK") };
         }
         assert!(!preview.contains("-i"), "agent mode should not add -i");
+    }
+
+    #[test]
+    fn supports_multiple_keys_and_publickey_auth() {
+        let config = Config::default();
+        let host = Host {
+            name: "prod".into(),
+            address: "example.com".into(),
+            user: Some("deploy".into()),
+            port: None,
+            key_paths: vec!["~/.ssh/first".into(), "~/.ssh/second".into()],
+            tags: vec![],
+            options: Vec::new(),
+            remote_command: None,
+            description: None,
+            bastion: None,
+            prefer_public_key_auth: true,
+        };
+
+        let preview = command_preview(&host, &config, None, None);
+        assert_eq!(preview.matches("-i").count(), 2);
+        assert!(preview.contains("first"));
+        assert!(preview.contains("second"));
+        assert!(preview.contains("PreferredAuthentications=publickey"));
+    }
+
+    #[test]
+    fn avoids_duplicate_publickey_auth_option() {
+        let config = Config::default();
+        let host = Host {
+            name: "prod".into(),
+            address: "example.com".into(),
+            user: Some("deploy".into()),
+            port: None,
+            key_paths: Vec::new(),
+            tags: vec![],
+            options: vec!["-o".into(), "PreferredAuthentications=publickey".into()],
+            remote_command: None,
+            description: None,
+            bastion: None,
+            prefer_public_key_auth: true,
+        };
+
+        let preview = command_preview(&host, &config, None, None);
+        assert_eq!(
+            preview
+                .matches("PreferredAuthentications=publickey")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn publickey_toggle_overrides_existing_preferred_auth_option() {
+        let config = Config::default();
+        let host = Host {
+            name: "prod".into(),
+            address: "example.com".into(),
+            user: Some("deploy".into()),
+            port: None,
+            key_paths: Vec::new(),
+            tags: vec![],
+            options: vec!["-o".into(), "PreferredAuthentications=password".into()],
+            remote_command: None,
+            description: None,
+            bastion: None,
+            prefer_public_key_auth: true,
+        };
+
+        let preview = command_preview(&host, &config, None, None);
+        assert!(preview.contains("PreferredAuthentications=publickey"));
+        assert!(!preview.contains("PreferredAuthentications=password"));
     }
 }

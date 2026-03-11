@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
 
 mod app;
+mod clipboard;
 mod config;
 mod model;
 mod ssh;

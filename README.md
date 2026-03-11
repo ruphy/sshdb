@@ -14,12 +14,12 @@ Keyboard-first SSH library and launcher TUI. Search, preview, and connect with a
 
 #### Keys
 - `/` search • `Enter` connect • `c` connect with remote command • `g` quick connect (ssh string)
-- `n` new host • `e` edit • `d` delete (confirm) • `y` duplicate host • `u` undo last change • `r` reload config
+- `x` copy connection string • `n` new host • `e` edit • `d` delete (confirm) • `y` duplicate host • `u` undo last change • `r` reload config
 - `j/k` or arrows move • `C` toggle dry-run • `?` help overlay • `a` about/credits • `q`/`Ctrl+C` quit • `Esc` closes modals/help
 
 #### New host dialog
 - Paste an `ssh ... user@host` command _or_ fill the fields; both paths are supported (pasting auto-unpacks the fields).
-- Fields: `name`, `host`, `user`, `port`, `key_path`, `bastion` (by host name), `tags`, `options` (space-separated, passed through to ssh), `remote_command` (runs by default), `description`.
+- Fields: `name`, `host`, `user`, `port`, `key_paths` (comma-separated, with a `~/.ssh` picker on Space), `bastion` (by host name), `tags`, `options` (space-separated, passed through to ssh), `remote_command` (runs by default), `prefer_public_key_auth`, `description`.
 - Edit host shows a read-only command preview at the bottom.
 
 #### Quick connect
@@ -27,8 +27,10 @@ Keyboard-first SSH library and launcher TUI. Search, preview, and connect with a
 
 #### Config
 - Stored at `~/.sshdb/config.toml` (created empty on first run; no sample hosts).
-- `default_key` is used when a host has no `key_path`; if set to `agent` sshdb won’t add `-i`.
+- `default_key` is used when a host has no `key_paths`; if set to `agent` sshdb won’t add `-i`.
+- Existing configs with a legacy `key_path` still load and are rewritten as `key_paths`.
 - If no key is set and an SSH agent exists (e.g., 1Password), sshdb avoids `-i` so the agent works. Without an agent, it falls back to `~/.ssh/id_ed25519` then `~/.ssh/id_rsa`.
+- `prefer_public_key_auth = true` adds `-o PreferredAuthentications=publickey` unless you already provided that option manually.
 - Backups are written as `config.toml.bak` on save.
 
 #### Notes

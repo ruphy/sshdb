@@ -334,11 +334,26 @@ fn build_details<'a>(host: &'a Host, app: &'a App, theme: Theme) -> Paragraph<'a
             Span::styled(port.to_string(), Style::default().fg(theme.text)),
         ]));
     }
-    if let Some(key) = host.key_path.as_ref().or(app.config.default_key.as_ref()) {
+    let key_display = if !host.key_paths.is_empty() {
+        Some(host.key_paths.join(", "))
+    } else {
+        app.config.default_key.clone()
+    };
+    if let Some(key) = key_display {
         lines.push(Line::from(vec![
-            Span::styled("key", Style::default().fg(theme.muted)),
+            Span::styled("keys", Style::default().fg(theme.muted)),
             Span::raw(": "),
             Span::styled(key, Style::default().fg(theme.text)),
+        ]));
+    }
+    if host.prefer_public_key_auth {
+        lines.push(Line::from(vec![
+            Span::styled("auth", Style::default().fg(theme.muted)),
+            Span::raw(": "),
+            Span::styled(
+                "PreferredAuthentications=publickey",
+                Style::default().fg(theme.text),
+            ),
         ]));
     }
     if let Some(bastion) = &host.bastion {
@@ -466,14 +481,13 @@ fn render_modal_form(
     config: &Config,
     theme: Theme,
 ) {
-    // Increase height if bastion dropdown is open
-    let base_height = 18;
-    let dropdown_height = if form.bastion_dropdown.is_some() {
+    let base_height = 20;
+    let overlay_height = if form.bastion_dropdown.is_some() || form.key_selector.is_some() {
         10
     } else {
         0
     };
-    let area = centered_rect_clamped(75, base_height + dropdown_height, frame.size());
+    let area = centered_rect_clamped(78, base_height + overlay_height, frame.size());
     let title = match form.kind {
         FormKind::Add => "new host",
         FormKind::Edit => "edit host",
@@ -549,13 +563,35 @@ fn render_modal_form(
     }
 
     let start_idx = if has_command { 1 } else { 0 };
-    let bastion_field_idx = if has_command { 6 } else { 5 };
+    let field_label_width = form
+        .fields
+        .iter()
+        .skip(start_idx)
+        .map(|field| field.label.len())
+        .max()
+        .unwrap_or(14)
+        .max(14);
+    let bastion_field_idx = form
+        .fields
+        .iter()
+        .position(|field| field.label == "Bastion")
+        .unwrap_or(usize::MAX);
+    let key_field_idx = form
+        .fields
+        .iter()
+        .position(|field| field.label == "SSH keys")
+        .unwrap_or(usize::MAX);
+    let prefer_public_key_idx = form
+        .fields
+        .iter()
+        .position(|field| field.label == "Prefer publickey")
+        .unwrap_or(usize::MAX);
     for (local_idx, f) in form.fields.iter().enumerate().skip(start_idx) {
         let active = form.index == local_idx;
         let prefix = if active { "▌" } else { " " };
         rows.push(Line::from(vec![
             Span::styled(
-                format!("{prefix}{:>14}", f.label),
+                format!("{prefix}{:>width$}", f.label, width = field_label_width),
                 Style::default().fg(if active {
                     theme.accent
                 } else {
@@ -577,11 +613,95 @@ fn render_modal_form(
             ),
         ]));
         if active {
-            let x = area.x + 1 + 1 + 14 + 2 + f.cursor as u16;
+            let x = area.x + 1 + 1 + field_label_width as u16 + 2 + f.cursor as u16;
             let y = area.y + 1 + line_no as u16;
             cursor = Some((x, y));
         }
         line_no += 1;
+
+        if local_idx == key_field_idx && form.key_selector.is_some() {
+            if let Some(selector) = &form.key_selector {
+                rows.push(Line::from(Span::raw("")));
+                line_no += 1;
+                if selector.available_keys.is_empty() {
+                    rows.push(Line::from(vec![Span::styled(
+                        "  No keys found in ~/.ssh. Type paths manually if needed.",
+                        Style::default().fg(theme.muted),
+                    )]));
+                    line_no += 1;
+                } else {
+                    rows.push(Line::from(vec![Span::styled(
+                        "  Available keys:",
+                        Style::default().fg(theme.muted),
+                    )]));
+                    line_no += 1;
+
+                    let start = selector.scroll.min(selector.available_keys.len());
+                    let end = (start + 8).min(selector.available_keys.len());
+                    for i in start..end {
+                        if let Some(key) = selector.available_keys.get(i) {
+                            let active_row = i == selector.selected;
+                            let checked = if selector
+                                .selected_keys
+                                .iter()
+                                .any(|selected| selected == key)
+                            {
+                                "[x]"
+                            } else {
+                                "[ ]"
+                            };
+                            rows.push(Line::from(vec![
+                                Span::styled(
+                                    if active_row { "  ► " } else { "    " },
+                                    Style::default().fg(if active_row {
+                                        theme.accent
+                                    } else {
+                                        theme.muted
+                                    }),
+                                ),
+                                Span::styled(
+                                    checked,
+                                    Style::default().fg(if active_row {
+                                        theme.accent
+                                    } else {
+                                        theme.accent_dim
+                                    }),
+                                ),
+                                Span::raw(" "),
+                                Span::styled(
+                                    key.clone(),
+                                    Style::default()
+                                        .fg(if active_row { theme.accent } else { theme.text })
+                                        .add_modifier(if active_row {
+                                            Modifier::BOLD
+                                        } else {
+                                            Modifier::empty()
+                                        }),
+                                ),
+                            ]));
+                            line_no += 1;
+                        }
+                    }
+                    if start > 0 || end < selector.available_keys.len() {
+                        rows.push(Line::from(vec![Span::styled(
+                            format!(
+                                "  showing {}-{} of {}",
+                                start + 1,
+                                end,
+                                selector.available_keys.len()
+                            ),
+                            Style::default().fg(theme.muted),
+                        )]));
+                        line_no += 1;
+                    }
+                    rows.push(Line::from(vec![Span::styled(
+                        "  (↑↓ to move, Space to toggle, Enter/Esc to close)",
+                        Style::default().fg(theme.muted),
+                    )]));
+                    line_no += 1;
+                }
+            }
+        }
 
         // Render bastion dropdown if this is the bastion field and dropdown is open
         if local_idx == bastion_field_idx && form.bastion_dropdown.is_some() {
@@ -655,6 +775,20 @@ fn render_modal_form(
         if local_idx == bastion_field_idx && active && form.bastion_dropdown.is_none() {
             rows.push(Line::from(vec![Span::styled(
                 "  (Press Space to browse hosts)",
+                Style::default().fg(theme.muted),
+            )]));
+            line_no += 1;
+        }
+        if local_idx == key_field_idx && active && form.key_selector.is_none() {
+            rows.push(Line::from(vec![Span::styled(
+                "  (Press Space to browse ~/.ssh keys, or type comma-separated paths)",
+                Style::default().fg(theme.muted),
+            )]));
+            line_no += 1;
+        }
+        if local_idx == prefer_public_key_idx && active {
+            rows.push(Line::from(vec![Span::styled(
+                "  (Press Space to toggle, or type y/n)",
                 Style::default().fg(theme.muted),
             )]));
             line_no += 1;

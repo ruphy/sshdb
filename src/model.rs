@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
 
+use serde::de::Deserializer;
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
@@ -10,7 +11,13 @@ pub struct Host {
     pub address: String,
     pub user: Option<String>,
     pub port: Option<u16>,
-    pub key_path: Option<String>,
+    #[serde(
+        default,
+        alias = "key_path",
+        deserialize_with = "deserialize_key_paths",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub key_paths: Vec<String>,
     #[serde(default)]
     pub tags: Vec<String>,
     #[serde(default)]
@@ -19,6 +26,8 @@ pub struct Host {
     pub remote_command: Option<String>,
     #[serde(default)]
     pub bastion: Option<String>,
+    #[serde(default)]
+    pub prefer_public_key_auth: bool,
     pub description: Option<String>,
 }
 
@@ -66,38 +75,79 @@ impl Config {
                     address: "52.14.33.10".to_string(),
                     user: Some("deploy".to_string()),
                     port: Some(22),
-                    key_path: Some("~/.ssh/prod_id_ed25519".to_string()),
+                    key_paths: vec!["~/.ssh/prod_id_ed25519".to_string()],
                     tags: vec!["web".into(), "blue".into()],
                     options: Vec::new(),
                     remote_command: None,
                     description: Some("Payment frontend".into()),
                     bastion: None,
+                    prefer_public_key_auth: false,
                 },
                 Host {
                     name: "staging-db".to_string(),
                     address: "35.12.2.4".to_string(),
                     user: Some("db".to_string()),
                     port: Some(2222),
-                    key_path: None,
+                    key_paths: Vec::new(),
                     tags: vec!["db".into(), "green".into()],
                     options: Vec::new(),
                     remote_command: None,
                     description: Some("Staging database".into()),
                     bastion: Some("jump-eu".into()),
+                    prefer_public_key_auth: false,
                 },
                 Host {
                     name: "jump-eu".to_string(),
                     address: "52.17.9.3".to_string(),
                     user: Some("ops".to_string()),
                     port: None,
-                    key_path: Some("~/.ssh/jump".to_string()),
+                    key_paths: vec!["~/.ssh/jump".to_string()],
                     tags: vec!["jump".into()],
                     options: Vec::new(),
                     remote_command: None,
                     description: Some("Jump host EU".into()),
                     bastion: None,
+                    prefer_public_key_auth: false,
                 },
             ],
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum KeyPathsField {
+    One(String),
+    Many(Vec<String>),
+}
+
+fn deserialize_key_paths<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<KeyPathsField>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(KeyPathsField::One(path)) => vec![path],
+        Some(KeyPathsField::Many(paths)) => paths,
+        None => Vec::new(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn loads_legacy_key_path_into_key_paths() {
+        let host: Host = toml::from_str(
+            r#"
+name = "prod"
+host = "10.0.0.1"
+key_path = "~/.ssh/legacy"
+"#,
+        )
+        .unwrap();
+
+        assert_eq!(host.key_paths, vec!["~/.ssh/legacy".to_string()]);
     }
 }

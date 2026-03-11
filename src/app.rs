@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // SPDX-FileCopyrightText: 2024 Riccardo Iaconelli <riccardo@kde.org>
 
+use std::fs;
 use std::path::PathBuf;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -8,6 +9,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 
+use crate::clipboard;
 use crate::config::ConfigStore;
 use crate::model::{Config, Host};
 use crate::ssh;
@@ -42,6 +44,19 @@ pub struct FormField {
     pub value: String,
     pub cursor: usize,
 }
+
+const FIELD_SSH_COMMAND: &str = "SSH command";
+const FIELD_NAME: &str = "Name";
+const FIELD_HOST: &str = "Host / IP";
+const FIELD_USER: &str = "User";
+const FIELD_PORT: &str = "Port";
+const FIELD_KEYS: &str = "SSH keys";
+const FIELD_BASTION: &str = "Bastion";
+const FIELD_TAGS: &str = "Tags (comma)";
+const FIELD_OPTIONS: &str = "Options";
+const FIELD_REMOTE_COMMAND: &str = "Remote command";
+const FIELD_PREFER_PUBLIC_KEY: &str = "Prefer publickey";
+const FIELD_DESCRIPTION: &str = "Description";
 
 #[derive(Clone, Debug)]
 pub struct BastionDropdownState {
@@ -102,11 +117,74 @@ impl BastionDropdownState {
 }
 
 #[derive(Clone, Debug)]
+pub struct KeySelectorState {
+    pub available_keys: Vec<String>,
+    pub selected: usize,
+    pub scroll: usize,
+    pub selected_keys: Vec<String>,
+}
+
+impl KeySelectorState {
+    pub fn new(current_keys: &[String]) -> Self {
+        let mut available_keys = discover_ssh_keys();
+        for key in current_keys {
+            if !available_keys.contains(key) {
+                available_keys.push(key.clone());
+            }
+        }
+        let selected = current_keys
+            .first()
+            .and_then(|current| available_keys.iter().position(|key| key == current))
+            .unwrap_or(0);
+        let mut state = Self {
+            available_keys,
+            selected,
+            scroll: 0,
+            selected_keys: current_keys.to_vec(),
+        };
+        state.ensure_visible(8);
+        state
+    }
+
+    fn toggle_current(&mut self) {
+        let Some(current) = self.available_keys.get(self.selected).cloned() else {
+            return;
+        };
+
+        if let Some(idx) = self.selected_keys.iter().position(|key| key == &current) {
+            self.selected_keys.remove(idx);
+        } else {
+            self.selected_keys.push(current);
+        }
+    }
+
+    fn current_selected(&self) -> bool {
+        self.available_keys
+            .get(self.selected)
+            .map(|current| self.selected_keys.iter().any(|key| key == current))
+            .unwrap_or(false)
+    }
+
+    fn field_value(&self) -> String {
+        self.selected_keys.join(", ")
+    }
+
+    fn ensure_visible(&mut self, window_size: usize) {
+        if self.selected < self.scroll {
+            self.scroll = self.selected;
+        } else if self.selected >= self.scroll + window_size {
+            self.scroll = self.selected + 1 - window_size;
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct FormState {
     pub kind: FormKind,
     pub fields: Vec<FormField>,
     pub index: usize,
     pub bastion_dropdown: Option<BastionDropdownState>,
+    pub key_selector: Option<KeySelectorState>,
     editing_host_name: Option<String>,
 }
 
@@ -117,12 +195,13 @@ impl FormState {
             address: "".into(),
             user: None,
             port: None,
-            key_path: None,
+            key_paths: Vec::new(),
             tags: Vec::new(),
             options: Vec::new(),
             remote_command: None,
             description: None,
             bastion: None,
+            prefer_public_key_auth: false,
         };
         let h = host.unwrap_or(&blank);
         let mut fields = Vec::new();
@@ -135,7 +214,7 @@ impl FormState {
             };
             let cmd_cursor = cmd_val.len();
             fields.push(FormField {
-                label: "SSH command",
+                label: FIELD_SSH_COMMAND,
                 value: cmd_val,
                 cursor: cmd_cursor,
             });
@@ -145,7 +224,11 @@ impl FormState {
         let host_addr = h.address.clone();
         let user = h.user.clone().unwrap_or_default();
         let port = h.port.map(|p| p.to_string()).unwrap_or_default();
-        let key = h.key_path.clone().unwrap_or_default();
+        let keys = if h.key_paths.is_empty() {
+            "".into()
+        } else {
+            h.key_paths.join(", ")
+        };
         let bastion = h.bastion.clone().unwrap_or_default();
         let tags = if h.tags.is_empty() {
             "".into()
@@ -159,55 +242,61 @@ impl FormState {
         };
         let remote = h.remote_command.clone().unwrap_or_default();
         let desc = h.description.clone().unwrap_or_default();
+        let prefer_public_key = bool_field_value(h.prefer_public_key_auth);
 
         fields.extend([
             FormField {
-                label: "Name",
+                label: FIELD_NAME,
                 value: name.clone(),
                 cursor: name.len(),
             },
             FormField {
-                label: "Host / IP",
+                label: FIELD_HOST,
                 value: host_addr.clone(),
                 cursor: host_addr.len(),
             },
             FormField {
-                label: "User",
+                label: FIELD_USER,
                 value: user.clone(),
                 cursor: user.len(),
             },
             FormField {
-                label: "Port",
+                label: FIELD_PORT,
                 value: port.clone(),
                 cursor: port.len(),
             },
             FormField {
-                label: "Key path",
-                value: key.clone(),
-                cursor: key.len(),
+                label: FIELD_KEYS,
+                value: keys.clone(),
+                cursor: keys.len(),
             },
             FormField {
-                label: "Bastion",
+                label: FIELD_BASTION,
                 value: bastion.clone(),
                 cursor: bastion.len(),
             },
             FormField {
-                label: "Tags (comma)",
+                label: FIELD_TAGS,
                 value: tags.clone(),
                 cursor: tags.len(),
             },
             FormField {
-                label: "Options",
+                label: FIELD_OPTIONS,
                 value: options.clone(),
                 cursor: options.len(),
             },
             FormField {
-                label: "Remote command",
+                label: FIELD_REMOTE_COMMAND,
                 value: remote.clone(),
                 cursor: remote.len(),
             },
             FormField {
-                label: "Description",
+                label: FIELD_PREFER_PUBLIC_KEY,
+                value: prefer_public_key.clone(),
+                cursor: prefer_public_key.len(),
+            },
+            FormField {
+                label: FIELD_DESCRIPTION,
                 value: desc.clone(),
                 cursor: desc.len(),
             },
@@ -218,154 +307,203 @@ impl FormState {
             fields,
             index: 0,
             bastion_dropdown: None,
+            key_selector: None,
             editing_host_name: host.map(|h| h.name.clone()),
         }
     }
 
     pub fn handle_input(&mut self, key: KeyEvent, config: &Config) {
-        // Check if we're on the bastion field (index 5 in the fields array, or 6 if Add form)
-        let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
-            6
-        } else {
-            5
-        };
-        let is_bastion_field = self.index == bastion_field_idx;
+        let bastion_field_idx = self.field_index(FIELD_BASTION);
+        let keys_field_idx = self.field_index(FIELD_KEYS);
+        let prefer_public_key_idx = self.field_index(FIELD_PREFER_PUBLIC_KEY);
+        let is_bastion_field = Some(self.index) == bastion_field_idx;
+        let is_keys_field = Some(self.index) == keys_field_idx;
+        let is_prefer_public_key_field = Some(self.index) == prefer_public_key_idx;
 
-        // Handle bastion dropdown if it's open
-        if is_bastion_field && self.bastion_dropdown.is_some() {
-            if let Some(dropdown) = self.bastion_dropdown.as_mut() {
-                match key.code {
-                    KeyCode::Esc => {
-                        // Close dropdown, keep current value
-                        self.bastion_dropdown = None;
-                        return;
-                    }
-                    KeyCode::Enter => {
-                        // Select from dropdown
-                        if let Some(idx) = dropdown.filtered_indices.get(dropdown.selected) {
-                            if let Some(host) = config.hosts.get(*idx) {
-                                if let Some(f) = self.fields.get_mut(bastion_field_idx) {
-                                    f.value = host.name.clone();
-                                    f.cursor = f.value.len();
-                                }
-                            }
+        if is_keys_field && self.key_selector.is_some() {
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.key_selector = None;
+                    return;
+                }
+                KeyCode::Tab => {
+                    self.key_selector = None;
+                    self.next();
+                    return;
+                }
+                KeyCode::BackTab => {
+                    self.key_selector = None;
+                    self.prev();
+                    return;
+                }
+                KeyCode::Up => {
+                    if let Some(selector) = self.key_selector.as_mut() {
+                        if selector.selected > 0 {
+                            selector.selected -= 1;
+                        } else {
+                            selector.selected = selector.available_keys.len().saturating_sub(1);
                         }
-                        self.bastion_dropdown = None;
-                        return;
+                        selector.ensure_visible(8);
                     }
-                    KeyCode::Up => {
+                    return;
+                }
+                KeyCode::Down => {
+                    if let Some(selector) = self.key_selector.as_mut() {
+                        if selector.selected + 1 < selector.available_keys.len() {
+                            selector.selected += 1;
+                        } else {
+                            selector.selected = 0;
+                        }
+                        selector.ensure_visible(8);
+                    }
+                    return;
+                }
+                KeyCode::Char(' ') => {
+                    let value = if let Some(selector) = self.key_selector.as_mut() {
+                        selector.toggle_current();
+                        Some(selector.field_value())
+                    } else {
+                        None
+                    };
+                    if let Some(value) = value {
+                        self.set_field_value(FIELD_KEYS, value);
+                    }
+                    return;
+                }
+                _ => return,
+            }
+        }
+
+        if is_bastion_field && self.bastion_dropdown.is_some() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.bastion_dropdown = None;
+                    return;
+                }
+                KeyCode::Enter => {
+                    let selected_host = self
+                        .bastion_dropdown
+                        .as_ref()
+                        .and_then(|dropdown| dropdown.filtered_indices.get(dropdown.selected))
+                        .and_then(|idx| config.hosts.get(*idx))
+                        .map(|host| host.name.clone());
+                    if let Some(host_name) = selected_host {
+                        self.set_field_value(FIELD_BASTION, host_name);
+                    }
+                    self.bastion_dropdown = None;
+                    return;
+                }
+                KeyCode::Up => {
+                    if let Some(dropdown) = self.bastion_dropdown.as_mut() {
                         if dropdown.selected > 0 {
                             dropdown.selected -= 1;
                         } else {
                             dropdown.selected = dropdown.filtered_indices.len().saturating_sub(1);
                         }
-                        return;
                     }
-                    KeyCode::Down => {
+                    return;
+                }
+                KeyCode::Down => {
+                    if let Some(dropdown) = self.bastion_dropdown.as_mut() {
                         if dropdown.selected + 1 < dropdown.filtered_indices.len() {
                             dropdown.selected += 1;
                         } else {
                             dropdown.selected = 0;
                         }
-                        return;
                     }
-                    KeyCode::Backspace => {
-                        // Update the field value first
-                        if let Some(f) = self.fields.get_mut(bastion_field_idx) {
+                    return;
+                }
+                KeyCode::Backspace => {
+                    let mut filter = None;
+                    if let Some(idx) = bastion_field_idx {
+                        if let Some(f) = self.fields.get_mut(idx) {
                             if f.cursor > 0 {
                                 f.value.remove(f.cursor - 1);
                                 f.cursor -= 1;
                             }
-                            // Sync dropdown search filter with field value
-                            dropdown.search_filter = f.value.clone();
-                            dropdown.rebuild_filter(config);
+                            filter = Some(f.value.clone());
                         }
+                    }
+                    if let (Some(filter), Some(dropdown)) = (filter, self.bastion_dropdown.as_mut())
+                    {
+                        dropdown.search_filter = filter;
+                        dropdown.rebuild_filter(config);
+                    }
+                    return;
+                }
+                KeyCode::Char(c) => {
+                    if c == ' ' && key.modifiers.is_empty() {
+                        self.bastion_dropdown = None;
                         return;
                     }
-                    KeyCode::Char(c) => {
-                        // Handle Space specially - close dropdown when open
-                        if c == ' ' && key.modifiers.is_empty() {
-                            self.bastion_dropdown = None;
-                            return;
-                        }
-                        // Allow typing to filter the dropdown
-                        if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
-                            // Update the field value first
-                            if let Some(f) = self.fields.get_mut(bastion_field_idx) {
+                    if key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT {
+                        let mut filter = None;
+                        if let Some(idx) = bastion_field_idx {
+                            if let Some(f) = self.fields.get_mut(idx) {
                                 f.value.insert(f.cursor, c);
                                 f.cursor += 1;
-                                // Sync dropdown search filter with field value
-                                dropdown.search_filter = f.value.clone();
-                                dropdown.rebuild_filter(config);
+                                filter = Some(f.value.clone());
                             }
                         }
-                        return;
+                        if let (Some(filter), Some(dropdown)) =
+                            (filter, self.bastion_dropdown.as_mut())
+                        {
+                            dropdown.search_filter = filter;
+                            dropdown.rebuild_filter(config);
+                        }
                     }
-                    _ => {}
+                    return;
                 }
+                _ => {}
             }
         }
 
         match key.code {
             KeyCode::Tab => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
-                    6
-                } else {
-                    5
-                };
-                // Close dropdown when leaving bastion field
-                if self.index == bastion_field_idx {
-                    self.bastion_dropdown = None;
-                }
+                self.close_inline_overlays();
                 self.next();
             }
             KeyCode::BackTab => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
-                    6
-                } else {
-                    5
-                };
-                // Close dropdown when leaving bastion field
-                if self.index == bastion_field_idx {
-                    self.bastion_dropdown = None;
-                }
+                self.close_inline_overlays();
                 self.prev();
             }
             KeyCode::Up => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
-                    6
-                } else {
-                    5
-                };
-                // Close dropdown when leaving bastion field
-                if self.index == bastion_field_idx {
-                    self.bastion_dropdown = None;
-                }
+                self.close_inline_overlays();
                 self.prev();
             }
             KeyCode::Down => {
-                let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
-                    6
-                } else {
-                    5
-                };
-                // Close dropdown when leaving bastion field
-                if self.index == bastion_field_idx {
-                    self.bastion_dropdown = None;
-                }
+                self.close_inline_overlays();
                 self.next();
             }
             KeyCode::Char(' ') => {
-                // Space key ONLY toggles dropdown when on bastion field
+                if is_keys_field {
+                    if self.key_selector.is_some() {
+                        let value = if let Some(selector) = self.key_selector.as_mut() {
+                            selector.toggle_current();
+                            Some(selector.field_value())
+                        } else {
+                            None
+                        };
+                        if let Some(value) = value {
+                            self.set_field_value(FIELD_KEYS, value);
+                        }
+                    } else {
+                        self.open_key_selector();
+                    }
+                    return;
+                }
                 if is_bastion_field {
                     if self.bastion_dropdown.is_some() {
                         self.bastion_dropdown = None;
                     } else {
                         self.open_bastion_dropdown(config);
                     }
-                    return; // Don't insert space, just toggle dropdown
+                    return;
                 }
-                // If not on bastion field, insert space normally
+                if is_prefer_public_key_field {
+                    self.toggle_bool_field(FIELD_PREFER_PUBLIC_KEY);
+                    return;
+                }
                 if let Some(f) = self.fields.get_mut(self.index) {
                     f.value.insert(f.cursor, ' ');
                     f.cursor += 1;
@@ -392,31 +530,37 @@ impl FormState {
                         f.cursor -= 1;
                     }
                 }
-                // Sync dropdown search filter if dropdown is open
                 if is_bastion_field {
+                    let filter = self.field(FIELD_BASTION).map(|f| f.value.clone());
                     if let Some(dropdown) = self.bastion_dropdown.as_mut() {
-                        if let Some(f) = self.fields.get(bastion_field_idx) {
-                            dropdown.search_filter = f.value.clone();
+                        if let Some(filter) = filter {
+                            dropdown.search_filter = filter;
                             dropdown.rebuild_filter(config);
                         }
                     }
                 }
             }
             KeyCode::Char(c) => {
-                // Space is handled above - skip it here
                 if c == ' ' {
                     return;
                 }
-                // Insert character normally
+                if is_prefer_public_key_field {
+                    if c.eq_ignore_ascii_case(&'y') {
+                        self.set_field_value(FIELD_PREFER_PUBLIC_KEY, bool_field_value(true));
+                    } else if c.eq_ignore_ascii_case(&'n') {
+                        self.set_field_value(FIELD_PREFER_PUBLIC_KEY, bool_field_value(false));
+                    }
+                    return;
+                }
                 if let Some(f) = self.fields.get_mut(self.index) {
                     f.value.insert(f.cursor, c);
                     f.cursor += 1;
                 }
-                // Sync dropdown search filter if dropdown is open and on bastion field
                 if is_bastion_field {
+                    let filter = self.field(FIELD_BASTION).map(|f| f.value.clone());
                     if let Some(dropdown) = self.bastion_dropdown.as_mut() {
-                        if let Some(f) = self.fields.get(bastion_field_idx) {
-                            dropdown.search_filter = f.value.clone();
+                        if let Some(filter) = filter {
+                            dropdown.search_filter = filter;
                             dropdown.rebuild_filter(config);
                         }
                     }
@@ -460,19 +604,36 @@ impl FormState {
         }
     }
 
+    fn field_index(&self, label: &'static str) -> Option<usize> {
+        self.fields.iter().position(|field| field.label == label)
+    }
+
+    fn field(&self, label: &'static str) -> Option<&FormField> {
+        self.fields.iter().find(|field| field.label == label)
+    }
+
+    fn close_inline_overlays(&mut self) {
+        self.bastion_dropdown = None;
+        self.key_selector = None;
+    }
+
     fn open_bastion_dropdown(&mut self, config: &Config) {
-        let bastion_field_idx = if matches!(self.kind, FormKind::Add) {
-            6
-        } else {
-            5
-        };
         let mut dropdown = BastionDropdownState::new(config, self.editing_host_name.as_deref());
-        // Initialize search filter with current field value
-        if let Some(f) = self.fields.get(bastion_field_idx) {
+        if let Some(f) = self.field(FIELD_BASTION) {
             dropdown.search_filter = f.value.clone();
             dropdown.rebuild_filter(config);
         }
+        self.key_selector = None;
         self.bastion_dropdown = Some(dropdown);
+    }
+
+    fn open_key_selector(&mut self) {
+        let current_keys = self
+            .field(FIELD_KEYS)
+            .map(|field| parse_key_paths(&field.value))
+            .unwrap_or_default();
+        self.bastion_dropdown = None;
+        self.key_selector = Some(KeySelectorState::new(&current_keys));
     }
 
     pub fn build_host(&self) -> Result<Host> {
@@ -490,7 +651,7 @@ impl FormState {
         idx += 1;
         let port_field = self.fields[idx].value.trim();
         idx += 1;
-        let key_field = self.fields[idx].value.trim();
+        let keys_field = self.fields[idx].value.trim();
         idx += 1;
         let bastion_field = self.fields[idx].value.trim();
         idx += 1;
@@ -499,6 +660,8 @@ impl FormState {
         let options_field = self.fields[idx].value.trim();
         idx += 1;
         let remote_field = self.fields[idx].value.trim();
+        idx += 1;
+        let prefer_public_key_field = self.fields[idx].value.trim();
         idx += 1;
         let desc_field = self.fields[idx].value.trim();
 
@@ -533,8 +696,14 @@ impl FormState {
             .transpose()
             .context("port must be numeric")?
             .or_else(|| raw_spec.as_ref().and_then(|s| s.port));
-        let key_path =
-            non_empty(key_field).or_else(|| raw_spec.as_ref().and_then(|s| s.key_path.clone()));
+        let key_paths = if keys_field.is_empty() {
+            raw_spec
+                .as_ref()
+                .map(|s| s.key_paths.clone())
+                .unwrap_or_default()
+        } else {
+            parse_key_paths(keys_field)
+        };
         let bastion = non_empty(bastion_field);
         let tags = non_empty(tags_field)
             .map(|s| {
@@ -553,6 +722,14 @@ impl FormState {
             })
             .unwrap_or_default();
         let remote_command = non_empty(remote_field);
+        let prefer_public_key_auth = if prefer_public_key_field.is_empty() {
+            raw_spec
+                .as_ref()
+                .map(|s| s.prefer_public_key_auth)
+                .unwrap_or(false)
+        } else {
+            parse_bool_field(prefer_public_key_field)
+        };
         let description = non_empty(desc_field);
 
         Ok(Host {
@@ -560,11 +737,12 @@ impl FormState {
             address: host_str,
             user,
             port,
-            key_path,
+            key_paths,
             tags,
             options,
             remote_command,
             bastion,
+            prefer_public_key_auth,
             description,
         })
     }
@@ -576,50 +754,62 @@ impl FormState {
         }
     }
 
+    fn toggle_bool_field(&mut self, label: &'static str) {
+        let enabled = self
+            .field(label)
+            .map(|field| parse_bool_field(&field.value))
+            .unwrap_or(false);
+        self.set_field_value(label, bool_field_value(!enabled));
+    }
+
     fn apply_spec(&mut self, spec: &SshSpec) {
-        self.set_field_value("Host / IP", spec.address.clone());
+        self.set_field_value(FIELD_HOST, spec.address.clone());
         if let Some(user) = &spec.user {
-            self.set_field_value("User", user.clone());
+            self.set_field_value(FIELD_USER, user.clone());
             if self
                 .fields
                 .iter()
-                .find(|f| f.label == "Name")
+                .find(|f| f.label == FIELD_NAME)
                 .map(|f| f.value.trim().is_empty())
                 .unwrap_or(false)
             {
-                self.set_field_value("Name", format!("{user}@{}", spec.address));
+                self.set_field_value(FIELD_NAME, format!("{user}@{}", spec.address));
             }
         } else {
-            self.set_field_value("User", "".into());
+            self.set_field_value(FIELD_USER, "".into());
         }
 
         if let Some(port) = spec.port {
-            self.set_field_value("Port", port.to_string());
+            self.set_field_value(FIELD_PORT, port.to_string());
         } else {
-            self.set_field_value("Port", "".into());
+            self.set_field_value(FIELD_PORT, "".into());
         }
 
-        if let Some(key) = &spec.key_path {
-            self.set_field_value("Key path", key.clone());
+        if spec.key_paths.is_empty() {
+            self.set_field_value(FIELD_KEYS, "".into());
         } else {
-            self.set_field_value("Key path", "".into());
+            self.set_field_value(FIELD_KEYS, spec.key_paths.join(", "));
         }
 
         if !spec.options.is_empty() {
-            self.set_field_value("Options", spec.options.join(" "));
+            self.set_field_value(FIELD_OPTIONS, spec.options.join(" "));
         } else {
-            self.set_field_value("Options", "".into());
+            self.set_field_value(FIELD_OPTIONS, "".into());
         }
         if let Some(bastion) = &spec.bastion {
-            self.set_field_value("Bastion", bastion.clone());
+            self.set_field_value(FIELD_BASTION, bastion.clone());
         } else {
-            self.set_field_value("Bastion", "".into());
+            self.set_field_value(FIELD_BASTION, "".into());
         }
         if let Some(remote) = &spec.remote_command {
-            self.set_field_value("Remote command", remote.clone());
+            self.set_field_value(FIELD_REMOTE_COMMAND, remote.clone());
         } else {
-            self.set_field_value("Remote command", "".into());
+            self.set_field_value(FIELD_REMOTE_COMMAND, "".into());
         }
+        self.set_field_value(
+            FIELD_PREFER_PUBLIC_KEY,
+            bool_field_value(spec.prefer_public_key_auth),
+        );
     }
 }
 
@@ -632,22 +822,43 @@ fn non_empty(s: &str) -> Option<String> {
     }
 }
 
+fn parse_key_paths(input: &str) -> Vec<String> {
+    input
+        .split(',')
+        .map(|key| key.trim().to_string())
+        .filter(|key| !key.is_empty())
+        .collect()
+}
+
+fn parse_bool_field(input: &str) -> bool {
+    matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "yes" | "true" | "on" | "1"
+    )
+}
+
+fn bool_field_value(enabled: bool) -> String {
+    if enabled { "yes" } else { "no" }.to_string()
+}
+
 #[derive(Debug, Clone)]
 struct SshSpec {
     address: String,
     user: Option<String>,
     port: Option<u16>,
-    key_path: Option<String>,
+    key_paths: Vec<String>,
     options: Vec<String>,
     bastion: Option<String>,
+    prefer_public_key_auth: bool,
     remote_command: Option<String>,
 }
 
 fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
     let mut user = None;
     let mut port = None;
-    let mut key_path = None;
+    let mut key_paths = Vec::new();
     let mut bastion = None;
+    let mut prefer_public_key_auth = false;
     let mut options = Vec::new();
     let tokens: Vec<&str> = input.split_whitespace().collect();
     let mut i = 0usize;
@@ -659,47 +870,21 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
     // First pass: find the target (hostname)
     while i < tokens.len() {
         let token = tokens[i];
-        match token {
-            "-p" => {
-                if let Some(p) = tokens.get(i + 1) {
-                    port = p.parse::<u16>().ok();
-                    i += 1;
-                }
-            }
-            "-i" => {
-                if let Some(k) = tokens.get(i + 1) {
-                    key_path = Some(k.to_string());
-                    i += 1;
-                }
-            }
-            "-J" => {
-                if let Some(b) = tokens.get(i + 1) {
-                    bastion = Some((*b).to_string());
-                    i += 1;
-                }
-            }
-            other if other.starts_with('-') => {
-                options.push(other.to_string());
-                // capture parameter if present
-                if let Some(next) = tokens.get(i + 1) {
-                    if !next.starts_with('-')
-                        && !next.contains('@')
-                        && next
-                            .chars()
-                            .any(|c| c.is_alphanumeric() || c == ':' || c == '/')
-                    {
-                        options.push((*next).to_string());
-                        i += 1;
-                    }
-                }
-            }
-            _ => {
-                target = Some(token.to_string());
-                i += 1;
-                break;
-            }
+        if parse_ssh_option(
+            &tokens,
+            &mut i,
+            &mut port,
+            &mut key_paths,
+            &mut bastion,
+            &mut prefer_public_key_auth,
+            &mut options,
+        ) {
+            i += 1;
+            continue;
         }
+        target = Some(token.to_string());
         i += 1;
+        break;
     }
 
     let Some(target) = target else {
@@ -709,48 +894,20 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
     // Second pass: continue parsing options after the target
     let mut remote_start = None;
     while i < tokens.len() {
-        let token = tokens[i];
-        match token {
-            "-p" => {
-                if let Some(p) = tokens.get(i + 1) {
-                    port = p.parse::<u16>().ok();
-                    i += 1;
-                }
-            }
-            "-i" => {
-                if let Some(k) = tokens.get(i + 1) {
-                    key_path = Some(k.to_string());
-                    i += 1;
-                }
-            }
-            "-J" => {
-                if let Some(b) = tokens.get(i + 1) {
-                    bastion = Some((*b).to_string());
-                    i += 1;
-                }
-            }
-            other if other.starts_with('-') => {
-                options.push(other.to_string());
-                // capture parameter if present
-                if let Some(next) = tokens.get(i + 1) {
-                    if !next.starts_with('-')
-                        && !next.contains('@')
-                        && next
-                            .chars()
-                            .any(|c| c.is_alphanumeric() || c == ':' || c == '/')
-                    {
-                        options.push((*next).to_string());
-                        i += 1;
-                    }
-                }
-            }
-            _ => {
-                // Not an option, this is where remote command starts
-                remote_start = Some(i);
-                break;
-            }
+        if parse_ssh_option(
+            &tokens,
+            &mut i,
+            &mut port,
+            &mut key_paths,
+            &mut bastion,
+            &mut prefer_public_key_auth,
+            &mut options,
+        ) {
+            i += 1;
+            continue;
         }
-        i += 1;
+        remote_start = Some(i);
+        break;
     }
 
     let mut addr = target.clone();
@@ -763,15 +920,139 @@ fn parse_ssh_spec(input: &str) -> Result<SshSpec> {
         address: addr,
         user,
         port,
-        key_path,
+        key_paths,
         options,
         bastion,
+        prefer_public_key_auth,
         remote_command: if let Some(start) = remote_start {
             Some(tokens[start..].join(" "))
         } else {
             None
         },
     })
+}
+
+fn parse_ssh_option(
+    tokens: &[&str],
+    i: &mut usize,
+    port: &mut Option<u16>,
+    key_paths: &mut Vec<String>,
+    bastion: &mut Option<String>,
+    prefer_public_key_auth: &mut bool,
+    options: &mut Vec<String>,
+) -> bool {
+    let token = tokens[*i];
+    match token {
+        "-p" => {
+            if let Some(next) = tokens.get(*i + 1) {
+                *port = next.parse::<u16>().ok();
+                *i += 1;
+            }
+            true
+        }
+        "-i" => {
+            if let Some(next) = tokens.get(*i + 1) {
+                key_paths.push((*next).to_string());
+                *i += 1;
+            }
+            true
+        }
+        "-J" => {
+            if let Some(next) = tokens.get(*i + 1) {
+                *bastion = Some((*next).to_string());
+                *i += 1;
+            }
+            true
+        }
+        "-o" => {
+            if let Some(next) = tokens.get(*i + 1) {
+                if is_preferred_public_key_option(next) {
+                    *prefer_public_key_auth = true;
+                } else {
+                    options.push(token.to_string());
+                    options.push((*next).to_string());
+                }
+                *i += 1;
+            } else {
+                options.push(token.to_string());
+            }
+            true
+        }
+        other if other.starts_with("-o") && other.len() > 2 => {
+            let option = &other[2..];
+            if is_preferred_public_key_option(option) {
+                *prefer_public_key_auth = true;
+            } else {
+                options.push(other.to_string());
+            }
+            true
+        }
+        other if other.starts_with('-') => {
+            options.push(other.to_string());
+            if let Some(next) = generic_ssh_option_arg(tokens, *i) {
+                options.push(next.to_string());
+                *i += 1;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+fn generic_ssh_option_arg<'a>(tokens: &'a [&str], i: usize) -> Option<&'a str> {
+    let next = tokens.get(i + 1)?;
+    if next.starts_with('-') || next.contains('@') {
+        return None;
+    }
+    if next
+        .chars()
+        .any(|c| c.is_alphanumeric() || c == ':' || c == '/' || c == '=' || c == '.')
+    {
+        return Some(*next);
+    }
+    None
+}
+
+fn is_preferred_public_key_option(option: &str) -> bool {
+    option
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .eq_ignore_ascii_case("PreferredAuthentications=publickey")
+}
+
+fn discover_ssh_keys() -> Vec<String> {
+    let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
+        return Vec::new();
+    };
+    let ssh_dir = home.join(".ssh");
+    let Ok(entries) = fs::read_dir(&ssh_dir) else {
+        return Vec::new();
+    };
+
+    let mut keys: Vec<String> = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            let path = entry.path();
+            if !path.is_file() || !looks_like_ssh_key(&path) {
+                return None;
+            }
+            let name = path.file_name()?.to_string_lossy();
+            Some(format!("~/.ssh/{name}"))
+        })
+        .collect();
+    keys.sort();
+    keys
+}
+
+fn looks_like_ssh_key(path: &std::path::Path) -> bool {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    !matches!(
+        name,
+        "authorized_keys" | "authorized_keys2" | "config" | "known_hosts" | "known_hosts.old"
+    ) && !name.ends_with(".pub")
 }
 
 #[derive(Clone, Debug)]
@@ -960,6 +1241,9 @@ impl App {
                     });
                 }
             }
+            KeyCode::Char('x') => {
+                self.copy_current_connection_string();
+            }
             KeyCode::Enter => {
                 if self.current_host().is_some() {
                     return self.connect(None);
@@ -1014,20 +1298,13 @@ impl App {
 
     fn handle_form(&mut self, key: KeyEvent) -> Result<Option<AppAction>> {
         if let Some(form) = self.form.as_mut() {
-            // Check if dropdown is open - if so, handle input there first
-            let bastion_field_idx = if matches!(form.kind, FormKind::Add) {
-                6
-            } else {
-                5
-            };
-            let is_bastion_field = form.index == bastion_field_idx;
-            if is_bastion_field && form.bastion_dropdown.is_some() {
-                // If Enter is pressed with dropdown open, let handle_input handle it
-                // (it will select and close dropdown, but not submit form)
-                if key.code == KeyCode::Enter {
-                    form.handle_input(key, &self.config);
-                    return Ok(None);
-                }
+            let active_bastion = form.field_index(FIELD_BASTION) == Some(form.index);
+            let active_keys = form.field_index(FIELD_KEYS) == Some(form.index);
+            let overlay_open = (active_bastion && form.bastion_dropdown.is_some())
+                || (active_keys && form.key_selector.is_some());
+            if overlay_open && matches!(key.code, KeyCode::Enter | KeyCode::Esc) {
+                form.handle_input(key, &self.config);
+                return Ok(None);
             }
 
             match key.code {
@@ -1036,8 +1313,7 @@ impl App {
                     self.form = None;
                 }
                 KeyCode::Enter => {
-                    // Only submit form if dropdown is not open
-                    if !(is_bastion_field && form.bastion_dropdown.is_some()) {
+                    if !overlay_open {
                         match form.build_host() {
                             Ok(host) => {
                                 let action = form.kind;
@@ -1359,11 +1635,12 @@ impl App {
                 address: spec.address.clone(),
                 user: spec.user.clone(),
                 port: spec.port,
-                key_path: spec.key_path.clone(),
+                key_paths: spec.key_paths.clone(),
                 tags: Vec::new(),
                 options: spec.options.clone(),
                 remote_command: spec.remote_command.clone(),
                 bastion: spec.bastion.clone(),
+                prefer_public_key_auth: spec.prefer_public_key_auth,
                 description: None,
             };
             self.config.hosts.push(host);
@@ -1392,8 +1669,10 @@ impl App {
             h.address == spec.address
                 && h.user.as_deref() == spec.user.as_deref()
                 && h.port == spec.port
+                && h.key_paths == spec.key_paths
                 && h.options == spec.options
                 && h.bastion.as_deref() == spec.bastion.as_deref()
+                && h.prefer_public_key_auth == spec.prefer_public_key_auth
                 && h.remote_command.as_deref() == spec.remote_command.as_deref()
         })
     }
@@ -1466,6 +1745,37 @@ impl App {
         Ok(Some(AppAction::RunSsh(cmd)))
     }
 
+    fn current_connection_string(&self) -> Option<String> {
+        self.current_host().map(|host| {
+            ssh::command_preview(host, &self.config, self.config.default_key.as_deref(), None)
+        })
+    }
+
+    fn copy_current_connection_string(&mut self) {
+        let Some(command) = self.current_connection_string() else {
+            self.status = Some(StatusLine {
+                text: "No host selected.".into(),
+                kind: StatusKind::Warn,
+            });
+            return;
+        };
+
+        match clipboard::copy_text(&command) {
+            Ok(()) => {
+                self.status = Some(StatusLine {
+                    text: "Copied connection string to clipboard.".into(),
+                    kind: StatusKind::Info,
+                });
+            }
+            Err(err) => {
+                self.status = Some(StatusLine {
+                    text: format!("Clipboard copy failed: {err}"),
+                    kind: StatusKind::Error,
+                });
+            }
+        }
+    }
+
     fn reload_config(&mut self) -> Result<()> {
         self.config = self
             .store
@@ -1484,6 +1794,7 @@ impl App {
             ("/", "search"),
             ("Enter", "connect"),
             ("c", "connect with remote command"),
+            ("x", "copy connection string"),
             ("g", "quick connect (ssh string)"),
             ("n", "new host"),
             ("e", "edit host"),
@@ -1546,11 +1857,18 @@ mod tests {
 
     #[test]
     fn parses_ssh_string() {
-        let spec = parse_ssh_spec("ssh -p 2201 -i ~/.ssh/key deploy@1.2.3.4").unwrap();
+        let spec = parse_ssh_spec(
+            "ssh -p 2201 -i ~/.ssh/key -i ~/.ssh/backup -o PreferredAuthentications=publickey deploy@1.2.3.4",
+        )
+        .unwrap();
         assert_eq!(spec.address, "1.2.3.4");
         assert_eq!(spec.user.as_deref(), Some("deploy"));
         assert_eq!(spec.port, Some(2201));
-        assert_eq!(spec.key_path.as_deref(), Some("~/.ssh/key"));
+        assert_eq!(
+            spec.key_paths,
+            vec!["~/.ssh/key".to_string(), "~/.ssh/backup".to_string()]
+        );
+        assert!(spec.prefer_public_key_auth);
     }
 
     #[test]
@@ -1577,6 +1895,14 @@ mod tests {
             .contains(&"StrictHostKeyChecking=no".to_string()));
         assert!(spec.options.contains(&"-v".to_string()));
         assert_eq!(spec.remote_command, None);
+        assert!(!spec.prefer_public_key_auth);
+
+        let spec = parse_ssh_spec("host -o PreferredAuthentications=publickey").unwrap();
+        assert_eq!(spec.address, "host");
+        assert!(spec.prefer_public_key_auth);
+        assert!(!spec
+            .options
+            .contains(&"PreferredAuthentications=publickey".to_string()));
 
         // Test that actual remote command after options is parsed correctly
         let spec = parse_ssh_spec("host -p 2222 uptime").unwrap();
@@ -1645,5 +1971,53 @@ mod tests {
             .filtered_indices
             .iter()
             .all(|i| config.hosts[*i].name != host.name));
+    }
+
+    #[test]
+    fn key_selector_keeps_manual_keys() {
+        let selector = KeySelectorState::new(&["~/.ssh/custom".into()]);
+        assert!(selector
+            .available_keys
+            .contains(&"~/.ssh/custom".to_string()));
+        assert!(selector.current_selected());
+    }
+
+    #[test]
+    fn key_selector_scrolls_to_keep_selection_visible() {
+        let mut selector = KeySelectorState {
+            available_keys: (0..12).map(|idx| format!("~/.ssh/key-{idx}")).collect(),
+            selected: 9,
+            scroll: 0,
+            selected_keys: Vec::new(),
+        };
+
+        selector.ensure_visible(8);
+        assert_eq!(selector.scroll, 2);
+    }
+
+    #[test]
+    fn escape_closes_key_selector_without_closing_form() {
+        let mut app = test_app();
+        let host = app.config.hosts[0].clone();
+        let mut form = FormState::new(FormKind::Edit, Some(&host), &app.config);
+        form.index = form.field_index(FIELD_KEYS).unwrap();
+        form.open_key_selector();
+        app.form = Some(form);
+        app.mode = Mode::Form;
+
+        app.handle_form(KeyEvent::from(KeyCode::Esc)).unwrap();
+
+        assert!(app.form.is_some());
+        assert!(app.form.as_ref().unwrap().key_selector.is_none());
+    }
+
+    #[test]
+    fn builds_current_connection_string_for_selected_host() {
+        let app = test_app();
+        let command = app.current_connection_string().unwrap();
+
+        assert!(command.starts_with("ssh "));
+        assert!(command.contains("deploy@52.14.33.10"));
+        assert!(command.contains("prod_id_ed25519"));
     }
 }
